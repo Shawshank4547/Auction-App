@@ -9,11 +9,19 @@ interface AuthStore {
   accessToken: string | null;
   refreshToken: string | null;
   isLoading: boolean;
+  // Pending OTP state (userId + email stored between Google/register and OTP verify)
+  pendingOtp: { userId: string; email: string; name: string } | null;
+
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
+  register: (email: string, password: string, name: string) => Promise<{ userId: string; email: string }>;
+  googleAuth: (idToken: string) => Promise<{ userId: string; email: string; name: string }>;
+  verifyOTP: (userId: string, otp: string) => Promise<void>;
+  googleVerifyOTP: (userId: string, otp: string) => Promise<void>;
+  resendOTP: (userId: string) => Promise<void>;
   logout: () => void;
   setTokens: (accessToken: string, refreshToken: string) => void;
   refreshUser: () => Promise<void>;
+  setPendingOtp: (data: { userId: string; email: string; name: string } | null) => void;
 }
 
 const useAuthStore = create<AuthStore>()(
@@ -23,6 +31,7 @@ const useAuthStore = create<AuthStore>()(
       accessToken: null,
       refreshToken: null,
       isLoading: false,
+      pendingOtp: null,
 
       login: async (email, password) => {
         set({ isLoading: true });
@@ -41,13 +50,56 @@ const useAuthStore = create<AuthStore>()(
         set({ isLoading: true });
         try {
           const res = await api.post('/auth/register', { email, password, name });
+          const { userId, email: returnedEmail } = res.data.data;
+          set({ isLoading: false });
+          return { userId, email: returnedEmail };
+        } catch (err) {
+          set({ isLoading: false });
+          throw err;
+        }
+      },
+
+      googleAuth: async (idToken) => {
+        set({ isLoading: true });
+        try {
+          const res = await api.post('/auth/google', { idToken });
+          const { userId, email, name } = res.data.data;
+          set({ isLoading: false });
+          return { userId, email, name };
+        } catch (err) {
+          set({ isLoading: false });
+          throw err;
+        }
+      },
+
+      verifyOTP: async (userId, otp) => {
+        set({ isLoading: true });
+        try {
+          const res = await api.post('/auth/verify-otp', { userId, otp });
           const { user, accessToken, refreshToken } = res.data.data;
-          set({ user, accessToken, refreshToken, isLoading: false });
+          set({ user, accessToken, refreshToken, pendingOtp: null, isLoading: false });
           socketService.connect(accessToken);
         } catch (err) {
           set({ isLoading: false });
           throw err;
         }
+      },
+
+      googleVerifyOTP: async (userId, otp) => {
+        set({ isLoading: true });
+        try {
+          const res = await api.post('/auth/google/verify-otp', { userId, otp });
+          const { user, accessToken, refreshToken } = res.data.data;
+          set({ user, accessToken, refreshToken, pendingOtp: null, isLoading: false });
+          socketService.connect(accessToken);
+        } catch (err) {
+          set({ isLoading: false });
+          throw err;
+        }
+      },
+
+      resendOTP: async (userId) => {
+        await api.post('/auth/resend-otp', { userId });
       },
 
       logout: () => {
@@ -56,7 +108,7 @@ const useAuthStore = create<AuthStore>()(
           api.post('/auth/logout').catch(() => {});
         }
         socketService.disconnect();
-        set({ user: null, accessToken: null, refreshToken: null });
+        set({ user: null, accessToken: null, refreshToken: null, pendingOtp: null });
       },
 
       setTokens: (accessToken, refreshToken) => {
@@ -71,6 +123,8 @@ const useAuthStore = create<AuthStore>()(
           get().logout();
         }
       },
+
+      setPendingOtp: (data) => set({ pendingOtp: data }),
     }),
     {
       name: 'auction-auth',
@@ -78,12 +132,12 @@ const useAuthStore = create<AuthStore>()(
         user: state.user,
         accessToken: state.accessToken,
         refreshToken: state.refreshToken,
+        pendingOtp: state.pendingOtp,
       }),
     }
   )
 );
 
-// Wire up the auth store to the API interceptor
 setAuthStore(useAuthStore);
 
 export default useAuthStore;
