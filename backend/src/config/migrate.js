@@ -6,15 +6,21 @@ const migrations = `
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255),
   name VARCHAR(255) NOT NULL,
   role VARCHAR(50) NOT NULL DEFAULT 'bidder' CHECK (role IN ('super_admin', 'organizer', 'bidder', 'viewer')),
   is_active BOOLEAN DEFAULT true,
   avatar_url TEXT,
   refresh_token TEXT,
+  google_id VARCHAR(255) UNIQUE,
+  auth_provider VARCHAR(50) DEFAULT 'local',
+  otp_code VARCHAR(6),
+  otp_expires_at TIMESTAMPTZ,
+  is_verified BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 
 -- Auctions table
 CREATE TABLE IF NOT EXISTS auctions (
