@@ -164,23 +164,36 @@ const deletePlayer = async (req, res) => {
   try {
     const { auctionId, playerId } = req.params;
 
+    // Verify organizer owns this auction
     const auctionCheck = await query(
       'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
       [auctionId, req.user.id]
     );
     if (!auctionCheck.rows.length) return sendError(res, 'Auction not found', 404);
 
+    // Only allow deleting players that haven't been sold / are not currently live
     const player = await query(
-      "SELECT * FROM players WHERE id = $1 AND auction_id = $2 AND status IN ('draft', 'available')",
+      "SELECT * FROM players WHERE id = $1 AND auction_id = $2 AND status IN ('draft', 'available', 'unsold')",
       [playerId, auctionId]
     );
-    if (!player.rows.length) return sendError(res, 'Player not found or cannot be deleted', 404);
+    if (!player.rows.length) {
+      return sendError(res, 'Player not found or cannot be deleted (sold or currently live)', 404);
+    }
 
+    // Delete auction_items rows referencing this player first (FK constraint)
+    await query(
+      "DELETE FROM auction_items WHERE player_id = $1 AND auction_id = $2 AND status IN ('pending', 'unsold', 'skipped')",
+      [playerId, auctionId]
+    );
+
+    // Delete the player
+    await query('DELETE FROM players WHERE id = $1', [playerId]);
+
+    // Clean up photo from storage
     if (player.rows[0].photo_url) {
       await deleteFile(player.rows[0].photo_url).catch(() => {});
     }
 
-    await query('DELETE FROM players WHERE id = $1', [playerId]);
     return sendSuccess(res, {}, 'Player deleted');
   } catch (err) {
     return sendError(res, 'Failed to delete player', 500);
