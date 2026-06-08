@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { toast } from 'react-hot-toast';
-import { TrendingUp, Zap } from 'lucide-react';
+import { TrendingUp, Zap, Wallet } from 'lucide-react';
 import clsx from 'clsx';
 import Button from '../shared/Button';
 import { formatCurrency, shortCurrency } from '../../utils/format';
@@ -14,22 +14,71 @@ interface BidPanelProps {
   disabled?: boolean;
 }
 
+/**
+ * Generate sensible quick-bid amounts that scale to the actual bid context.
+ * If bid_increment is huge relative to budget, fall back to smaller steps.
+ */
+function getQuickAmounts(
+  minBid: number,
+  bidIncrement: number,
+  remainingBudget: number,
+  bidCapAmount: number | null
+): number[] {
+  const cap = bidCapAmount ?? Infinity;
+  const budget = remainingBudget;
+
+  // Choose step size: prefer bid_increment but scale down if it would eat all budget in 1 step
+  let step = bidIncrement;
+  if (step > budget * 0.5) {
+    // Step is more than 50% of budget — use smaller increments
+    step = Math.max(1, Math.floor(budget / 5));
+    // Round to a "nice" number
+    const magnitude = Math.pow(10, Math.floor(Math.log10(step)));
+    step = Math.round(step / magnitude) * magnitude || 1;
+  }
+
+  const amounts: number[] = [];
+  const candidates = [
+    minBid,
+    minBid + step,
+    minBid + step * 2,
+    minBid + step * 4,
+    minBid + step * 9,
+  ];
+
+  for (const a of candidates) {
+    if (a <= budget && a <= cap && !amounts.includes(a)) {
+      amounts.push(a);
+    }
+    if (amounts.length >= 4) break;
+  }
+
+  return amounts;
+}
+
 const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled }) => {
   const [loading, setLoading] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
 
   const currentPrice = liveItem.current_price || 0;
-  const minBid = currentPrice + auction.bid_increment;
+  const basePrice = liveItem.base_price || auction.starting_bid || auction.bid_increment;
+
+  // First bid must meet base price; subsequent bids must beat current by increment
+  const minBid = currentPrice > 0
+    ? currentPrice + auction.bid_increment
+    : Math.max(basePrice, auction.starting_bid || 0);
+
   const isLeader = myTeam?.id === liveItem.current_leader_team_id;
   const canBid = !disabled && myTeam && !isLeader && (myTeam.remaining_budget >= minBid);
 
-  const quickAmounts = [
-    minBid,
-    minBid + auction.bid_increment,
-    minBid + auction.bid_increment * 2,
-    minBid + auction.bid_increment * 4,
-  ].filter((a) => !auction.bid_cap_enabled || a <= (auction.bid_cap_amount || Infinity))
-   .filter((a) => a <= (myTeam?.remaining_budget || 0));
+  const quickAmounts = myTeam
+    ? getQuickAmounts(
+        minBid,
+        auction.bid_increment,
+        myTeam.remaining_budget,
+        auction.bid_cap_enabled ? auction.bid_cap_amount : null
+      )
+    : [];
 
   const handleBid = async (amount: number) => {
     if (!myTeam || !canBid) return;
@@ -67,16 +116,19 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
   }
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-white flex items-center gap-2">
-          <Zap size={16} className="text-yellow-400" /> Place Bid
+    <div className="bg-gray-800 rounded-xl p-4 space-y-4 w-full">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold text-white flex items-center gap-2 shrink-0">
+          <Zap size={16} className="text-yellow-400" />
+          Place Bid
         </h3>
-        <div className="text-right">
-          <p className="text-xs text-gray-400">Budget left</p>
-          <p className="text-sm font-bold text-green-400">
+        <div className="flex items-center gap-1.5 bg-gray-700/60 rounded-lg px-3 py-1.5 min-w-0">
+          <Wallet size={13} className="text-green-400 shrink-0" />
+          <span className="text-xs text-gray-400 shrink-0">Budget</span>
+          <span className="text-sm font-bold text-green-400 truncate">
             {formatCurrency(myTeam.remaining_budget, auction.currency)}
-          </p>
+          </span>
         </div>
       </div>
 
@@ -89,6 +141,12 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
       {!isLeader && !canBid && myTeam.remaining_budget < minBid && (
         <div className="bg-red-900/30 border border-red-800 rounded-lg p-2 text-center">
           <p className="text-red-400 text-sm">Insufficient budget</p>
+        </div>
+      )}
+
+      {disabled && !isLeader && (
+        <div className="bg-yellow-900/20 border border-yellow-800/50 rounded-lg p-2 text-center">
+          <p className="text-yellow-400 text-sm">Auction is paused</p>
         </div>
       )}
 
@@ -106,7 +164,7 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
                 'disabled:opacity-50 disabled:cursor-not-allowed'
               )}
             >
-              {shortCurrency(amount)}
+              {formatCurrency(amount, auction.currency)}
             </button>
           ))}
         </div>
@@ -117,14 +175,13 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
         <form onSubmit={handleCustomBid} className="flex gap-2">
           <input
             type="number"
-            placeholder={`Min: ${shortCurrency(minBid)}`}
+            placeholder={`Min: ${formatCurrency(minBid, auction.currency)}`}
             value={customAmount}
             onChange={(e) => setCustomAmount(e.target.value)}
             min={minBid}
-            step={auction.bid_increment}
-            className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0"
           />
-          <Button type="submit" loading={loading} size="md">
+          <Button type="submit" loading={loading} size="md" className="shrink-0">
             <TrendingUp size={16} className="mr-1" /> Bid
           </Button>
         </form>

@@ -20,6 +20,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     addChatMessage,
     setActiveTieBreak,
     setIsPaused,
+    setAuctionEnded,
     updateTeamBudget,
     markAuctionItemSold,
   } = useAuctionStore();
@@ -29,7 +30,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
   useEffect(() => {
     if (!accessToken) return;
 
-    const socket = socketService.connect(accessToken);
+    socketService.connect(accessToken);
     socketService.joinAuction(auctionId);
 
     // ── Auction lifecycle ───────────────────────────────────
@@ -37,20 +38,41 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       toast.success('Auction has started!');
     });
 
-    const offPaused = socketService.on('auction:paused', () => {
-      setIsPaused(true);
-      toast('Auction paused', { icon: '⏸️' });
-    });
+    const offPaused = socketService.on<{ auctionId: string; timeRemaining?: number }>(
+      'auction:paused',
+      (data) => {
+        setIsPaused(true);
+        // Freeze the timer at the server-reported remaining time
+        if (data.timeRemaining !== undefined) {
+          setTimeRemaining(data.timeRemaining);
+        }
+        // Use a bottom-center toast so it doesn't crowd the organizer buttons
+        toast('⏸ Auction paused', {
+          position: 'bottom-center',
+          icon: '⏸️',
+          style: { background: '#78350f', color: '#fef3c7', border: '1px solid #92400e' },
+        });
+      }
+    );
 
-    const offResumed = socketService.on('auction:resumed', () => {
-      setIsPaused(false);
-      toast.success('Auction resumed');
-    });
+    const offResumed = socketService.on<{ auctionId: string; timeRemaining?: number }>(
+      'auction:resumed',
+      (data) => {
+        setIsPaused(false);
+        if (data.timeRemaining !== undefined) {
+          setTimeRemaining(data.timeRemaining);
+        }
+        toast.success('▶ Auction resumed', {
+          position: 'bottom-center',
+        });
+      }
+    );
 
     const offEnded = socketService.on('auction:ended', () => {
       setLiveItem(null);
       setTimeRemaining(null);
-      toast('Auction has ended', { icon: '🏁', duration: 6000 });
+      setAuctionEnded(true); // FIX: actually set the flag
+      toast('Auction has ended', { icon: '🏁', duration: 6000, position: 'bottom-center' });
     });
 
     // ── Player events ───────────────────────────────────────
@@ -67,7 +89,6 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       roundNumber: number;
       sequenceOrder: number;
     }>('player:introduced', (data) => {
-      // Build a complete AuctionItem from the full event data
       setLiveItem({
         id: data.auctionItemId,
         auction_id: auctionId,
@@ -90,9 +111,8 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
         started_at: new Date().toISOString(),
         completed_at: null,
       } as AuctionItem);
-      // Reset tie-break state for new player
       setActiveTieBreak(null);
-      toast(`🏏 Now auctioning: ${data.playerName}`);
+      toast(`🏏 Now auctioning: ${data.playerName}`, { position: 'bottom-center' });
     });
 
     const offSold = socketService.on<{
@@ -106,9 +126,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       setLiveItem(null);
       setTimeRemaining(null);
       setActiveTieBreak(null);
-      // Update team budget in store so TeamBudgetBar reflects immediately
       updateTeamBudget(data.teamId, data.finalPrice);
-      // Remove from queue
       markAuctionItemSold(data.auctionItemId);
       const isMyTeam = data.teamId === myTeamId;
       if (isMyTeam) {
@@ -131,10 +149,12 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       teamId: string;
       amount: number;
       timeRemaining?: number;
-      bid: { team_name?: string };
+      bid: { team_name?: string; team_id?: string };
     }>('bid:accepted', (data) => {
-      updateLiveItemPrice(data.amount, data.teamId, data.bid?.team_name || '', data.timeRemaining);
-      addBidFeed({ teamId: data.teamId, teamName: data.bid?.team_name || '', amount: data.amount });
+      // Use team_name from bid object; fallback gracefully
+      const teamName = data.bid?.team_name || '';
+      updateLiveItemPrice(data.amount, data.teamId, teamName, data.timeRemaining);
+      addBidFeed({ teamId: data.teamId, teamName, amount: data.amount });
     });
 
     const offBidRejected = socketService.on<{ reason: string }>('bid:rejected', (data) => {

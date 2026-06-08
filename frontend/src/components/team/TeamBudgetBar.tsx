@@ -21,7 +21,7 @@ const TeamBudgetBar: React.FC<TeamBudgetBarProps> = ({ team, currency = 'INR', c
       <div className="space-y-1">
         <div className="flex justify-between text-xs text-gray-400">
           <span>{team.name}</span>
-          <span className="text-green-400 font-medium">{shortCurrency(team.remaining_budget)}</span>
+          <span className="text-green-400 font-medium">{shortCurrency(team.remaining_budget, currency)}</span>
         </div>
         <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
           <div
@@ -61,7 +61,7 @@ const TeamBudgetBar: React.FC<TeamBudgetBarProps> = ({ team, currency = 'INR', c
         </div>
         <div className="flex justify-between text-xs text-gray-600 mt-1">
           <span>Spent: {formatCurrency(team.total_budget - team.remaining_budget, currency)}</span>
-          <span>Total: {shortCurrency(team.total_budget)}</span>
+          <span>Total: {shortCurrency(team.total_budget, currency)}</span>
         </div>
       </div>
     </div>

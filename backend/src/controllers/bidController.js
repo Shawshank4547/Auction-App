@@ -34,10 +34,14 @@ const placeBid = async (req, res) => {
       return sendError(res, result.reason, 400);
     }
 
+    // FIX: Fetch team name to include in socket event so LivePlayerCard shows "by TeamName"
+    const teamRes = await query('SELECT name FROM teams WHERE id = $1', [teamId]);
+    const teamName = teamRes.rows[0]?.name || '';
+
     const io = req.app.get('io');
     if (io) {
       io.to(`auction:${auctionId}`).emit('bid:accepted', {
-        bid: result.bid,
+        bid: { ...result.bid, team_name: teamName }, // FIX: include team_name
         auctionItemId,
         teamId,
         amount: parseInt(amount),

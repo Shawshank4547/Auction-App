@@ -1,7 +1,7 @@
 import React from 'react';
-import { User, Tag, IndianRupee } from 'lucide-react';
+import { User } from 'lucide-react';
 import Badge from '../shared/Badge';
-import { formatCurrency, shortCurrency } from '../../utils/format';
+import { formatCurrency } from '../../utils/format';
 import { AuctionItem } from '../../types';
 import clsx from 'clsx';
 
@@ -10,22 +10,50 @@ interface LivePlayerCardProps {
   currency?: string;
 }
 
+// Resolve image URL — handles both absolute (http/https) and relative (/uploads/...) paths.
+// For relative paths, prepend the backend origin so images work cross-origin.
+const BACKEND_URL = (process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001').replace(/\/$/, '');
+
+function resolveImageUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  // Relative path — prepend backend base
+  return `${BACKEND_URL}${url}`;
+}
+
 const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' }) => {
   const hasLeader = item.current_leader_team_id && item.current_price;
+  const photoUrl = resolveImageUrl(item.photo_url);
 
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
       {/* Player photo */}
       <div className="relative h-48 bg-gradient-to-br from-blue-900/40 to-purple-900/40 flex items-center justify-center">
-        {item.photo_url ? (
+        {photoUrl ? (
           <img
-            src={item.photo_url}
+            src={photoUrl}
             alt={item.player_name}
             className="h-full w-full object-cover"
+            onError={(e) => {
+              // If image fails to load, hide it and show the fallback icon
+              (e.target as HTMLImageElement).style.display = 'none';
+              const parent = (e.target as HTMLImageElement).parentElement;
+              if (parent) {
+                const fallback = parent.querySelector('[data-fallback]') as HTMLElement;
+                if (fallback) fallback.style.display = 'flex';
+              }
+            }}
           />
-        ) : (
+        ) : null}
+        {/* Fallback icon — shown when no photo or photo fails */}
+        <div
+          data-fallback
+          className="absolute inset-0 flex items-center justify-center"
+          style={{ display: photoUrl ? 'none' : 'flex' }}
+        >
           <User size={64} className="text-gray-600" />
-        )}
+        </div>
+
         <div className="absolute top-3 left-3">
           <span className="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full animate-pulse">
             LIVE
@@ -56,9 +84,11 @@ const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' 
               <p className="text-2xl font-bold text-green-400">
                 {formatCurrency(item.current_price!, currency)}
               </p>
-              <p className="text-xs text-gray-300 mt-1">
-                by <span className="font-semibold text-white">{item.leader_team_name}</span>
-              </p>
+              {item.leader_team_name && (
+                <p className="text-xs text-gray-300 mt-1">
+                  by <span className="font-semibold text-white">{item.leader_team_name}</span>
+                </p>
+              )}
             </>
           ) : (
             <>

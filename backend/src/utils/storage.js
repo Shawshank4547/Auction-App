@@ -30,6 +30,10 @@ const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
 const LOCAL_UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 const LOCAL_PUBLIC_PATH = '/uploads'; // served by express static
 
+// FIX: Backend base URL so images resolve cross-origin when R2 not configured.
+// Set BACKEND_URL in .env e.g. http://localhost:3001 or https://api.yoursite.com
+const BACKEND_URL = (process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`).replace(/\/$/, '');
+
 /**
  * Ensure local uploads dir exists
  */
@@ -43,26 +47,31 @@ const ensureLocalDir = (folder) => {
 
 /**
  * Upload a file buffer to R2 (or local disk in dev).
+ * Always returns an ABSOLUTE URL so images work from any frontend origin.
  */
 const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
   // Local fallback when R2 is not configured
   if (!R2_CONFIGURED || !s3Client) {
     try {
-      const extension = mimetype.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+      // Normalise extension — e.g. "image/jpeg" → "jpg", "image/heic" → "heic"
+      const rawExt = mimetype.split('/')[1] || 'jpg';
+      const extension = rawExt.replace('jpeg', 'jpg');
       const filename = `${uuidv4()}.${extension}`;
       const dir = ensureLocalDir(folder);
       const filepath = path.join(dir, filename);
       fs.writeFileSync(filepath, buffer);
-      const publicUrl = `${LOCAL_PUBLIC_PATH}/${folder}/${filename}`;
-      console.info(`[storage] R2 not configured — saved locally: ${publicUrl}`);
-      return publicUrl;
+      // FIX: return absolute URL so the frontend can use it cross-origin
+      const absoluteUrl = `${BACKEND_URL}${LOCAL_PUBLIC_PATH}/${folder}/${filename}`;
+      console.info(`[storage] R2 not configured — saved locally: ${absoluteUrl}`);
+      return absoluteUrl;
     } catch (err) {
       console.error('[storage] Local save failed:', err);
       return null;
     }
   }
 
-  const extension = mimetype.split('/')[1] || 'jpg';
+  const rawExt = mimetype.split('/')[1] || 'jpg';
+  const extension = rawExt.replace('jpeg', 'jpg');
   const key = `${folder}/${uuidv4()}.${extension}`;
 
   await s3Client.send(
@@ -84,10 +93,13 @@ const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
 const deleteFile = async (publicUrl) => {
   if (!publicUrl) return;
 
-  // Local file
-  if (publicUrl.startsWith(LOCAL_PUBLIC_PATH)) {
+  // Local file — handle both old relative paths and new absolute paths
+  const localRelative = `${BACKEND_URL}${LOCAL_PUBLIC_PATH}`;
+  if (publicUrl.startsWith(localRelative) || publicUrl.startsWith(LOCAL_PUBLIC_PATH)) {
     try {
-      const relativePath = publicUrl.replace(LOCAL_PUBLIC_PATH, '');
+      const relativePath = publicUrl
+        .replace(localRelative, '')
+        .replace(LOCAL_PUBLIC_PATH, '');
       const filepath = path.join(LOCAL_UPLOADS_DIR, relativePath);
       if (fs.existsSync(filepath)) {
         fs.unlinkSync(filepath);

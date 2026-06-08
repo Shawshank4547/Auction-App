@@ -56,11 +56,38 @@ export const timeAgo = (dateStr: string): string => {
 };
 
 /**
- * Short number format (e.g., 10L, 1Cr)
+ * Short currency format with symbol — always shows the currency sign.
+ * e.g. ₹10L, ₹1Cr, ₹500, $1.5M
  */
-export const shortCurrency = (amount: number): string => {
-  if (amount >= 10000000) return `${(amount / 10000000).toFixed(1)}Cr`;
-  if (amount >= 100000) return `${(amount / 100000).toFixed(1)}L`;
-  if (amount >= 1000) return `${(amount / 1000).toFixed(0)}K`;
-  return amount.toString();
+export const shortCurrency = (amount: number, currency = 'INR'): string => {
+  const symbol = currency === 'INR' ? '₹'
+    : currency === 'USD' ? '$'
+    : currency === 'GBP' ? '£'
+    : currency === 'EUR' ? '€'
+    : currency;
+
+  if (currency === 'INR') {
+    if (amount >= 10_000_000) return `${symbol}${(amount / 10_000_000).toFixed(1)}Cr`;
+    if (amount >= 100_000) return `${symbol}${(amount / 100_000).toFixed(1)}L`;
+    if (amount >= 1_000) return `${symbol}${(amount / 1_000).toFixed(0)}K`;
+    return `${symbol}${amount.toLocaleString('en-IN')}`;
+  }
+
+  // Non-INR
+  if (amount >= 1_000_000_000) return `${symbol}${(amount / 1_000_000_000).toFixed(1)}B`;
+  if (amount >= 1_000_000) return `${symbol}${(amount / 1_000_000).toFixed(1)}M`;
+  if (amount >= 1_000) return `${symbol}${(amount / 1_000).toFixed(0)}K`;
+  return `${symbol}${amount.toLocaleString()}`;
+};
+
+/**
+ * Resolve an image URL — handles both absolute (http/https) and relative (/uploads/...) paths.
+ * For relative paths, prepends the backend base URL so images work cross-origin.
+ */
+const BACKEND_BASE = (process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001').replace(/\/$/, '');
+
+export const resolveImageUrl = (url: string | null | undefined): string | null => {
+  if (!url) return null;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return `${BACKEND_BASE}${url}`;
 };

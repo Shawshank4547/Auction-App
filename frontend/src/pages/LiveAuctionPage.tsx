@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Pause, Play, SkipForward, ArrowLeft, ChevronRight, Flag } from 'lucide-react';
+import { Pause, Play, SkipForward, ArrowLeft, ChevronRight, Flag, X, List } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
@@ -49,25 +49,21 @@ const LiveAuctionPage: React.FC = () => {
       setTimeRemaining(tr);
       setAuctionItems(itemsRes.data.data);
 
-      // FIX: Restore pause state from liveItem.paused_at
       if (li && li.paused_at) {
         setIsPaused(true);
       } else {
         setIsPaused(false);
       }
 
-      // FIX: Use dedicated participation endpoint instead of my-auctions
       if (user?.role === 'bidder' || user?.role === 'viewer') {
         try {
           const partRes = await api.get(`/auctions/${id}/my-participation`);
           if (partRes.data.data?.team) {
             const teamData = partRes.data.data.team;
-            // Find the full team object from teams array for live budget data
             const found = t.find((tm: Team) => tm.id === teamData.id);
             setMyTeam(found || teamData);
           }
         } catch {
-          // Not a participant — viewer mode
           setMyTeam(null);
         }
       }
@@ -84,7 +80,6 @@ const LiveAuctionPage: React.FC = () => {
     return () => { reset(); };
   }, [id]);
 
-  // FIX: Keep myTeam in sync with live team budget updates from store
   useEffect(() => {
     if (myTeam && teams.length > 0) {
       const updated = teams.find(t => t.id === myTeam.id);
@@ -116,6 +111,7 @@ const LiveAuctionPage: React.FC = () => {
     setActionLoading(true);
     try {
       await api.post(`/auctions/${id}/next-player`, { auctionItemId });
+      setShowQueue(false);
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'Failed to introduce player');
     } finally {
@@ -173,8 +169,9 @@ const LiveAuctionPage: React.FC = () => {
               variant="ghost"
               size="sm"
               onClick={() => setShowQueue(!showQueue)}
+              className={showQueue ? 'bg-gray-700 border-gray-500' : ''}
             >
-              <ChevronRight size={14} className="mr-1" />
+              <List size={14} className="mr-1" />
               Queue ({pendingItems.length})
             </Button>
             <Button
@@ -188,6 +185,74 @@ const LiveAuctionPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* PAUSE OVERLAY BANNER — shown at bottom of page, not near the top buttons */}
+      {isPaused && !auctionIsOver && (
+        <div className="sticky top-[57px] z-20 bg-yellow-900/80 border-b border-yellow-700 px-4 py-2 flex items-center justify-center gap-3 backdrop-blur-sm">
+          <span className="text-lg">⏸️</span>
+          <span className="text-yellow-300 font-semibold text-sm">Auction Paused</span>
+          {isOrganizer && (
+            <Button size="sm" variant="success" loading={actionLoading} onClick={handlePause} className="ml-2">
+              <Play size={12} className="mr-1" /> Resume
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* QUEUE PANEL — slide-in from right */}
+      {showQueue && isOrganizer && (
+        <div className="fixed inset-y-0 right-0 z-40 w-80 bg-gray-900 border-l border-gray-700 shadow-2xl flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+            <h2 className="font-semibold text-white flex items-center gap-2">
+              <List size={16} className="text-blue-400" />
+              Player Queue
+              <span className="text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{pendingItems.length}</span>
+            </h2>
+            <button onClick={() => setShowQueue(false)} className="p-1.5 rounded hover:bg-gray-700 text-gray-400">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {pendingItems.length === 0 ? (
+              <div className="text-center py-8 text-gray-500 text-sm">
+                No players in queue
+              </div>
+            ) : (
+              pendingItems.map((item) => (
+                <div key={item.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center text-xs text-gray-400 font-bold shrink-0">
+                    #{item.sequence_order}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{item.player_name}</p>
+                    <p className="text-xs text-gray-400 truncate">
+                      {item.category ? `${item.category}` : ''}
+                      {item.base_price ? ` · Base: ₹${(item.base_price / 100000).toFixed(1)}L` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={actionLoading}
+                    onClick={() => handleNextPlayer(item.id)}
+                    disabled={!!liveItem}
+                  >
+                    <SkipForward size={13} className="mr-1" />
+                    {liveItem ? 'Wait' : 'Go'}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+          {liveItem && (
+            <div className="px-3 py-2 border-t border-gray-800 bg-yellow-900/20">
+              <p className="text-xs text-yellow-400 text-center">
+                Player currently being auctioned. Wait for them to be sold/unsold.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* End Auction confirmation */}
       {showEndConfirm && (
@@ -264,32 +329,9 @@ const LiveAuctionPage: React.FC = () => {
                       : 'No more players in queue'}
                   </p>
                   {isOrganizer && pendingItems.length > 0 && (
-                    <div className="space-y-2 max-w-sm mx-auto">
-                      <p className="text-gray-400 text-sm font-medium">Select a player to introduce:</p>
-                      {pendingItems.slice(0, 8).map((item) => (
-                        <div key={item.id} className="flex items-center gap-3 bg-gray-700 rounded-lg p-3 text-left">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-white truncate">{item.player_name}</p>
-                            <p className="text-xs text-gray-400">
-                              #{item.sequence_order}
-                              {item.category ? ` · ${item.category}` : ''}
-                              {item.base_price ? ` · Base: ₹${(item.base_price / 100000).toFixed(1)}L` : ''}
-                            </p>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            loading={actionLoading}
-                            onClick={() => handleNextPlayer(item.id)}
-                          >
-                            <SkipForward size={14} className="mr-1" /> Introduce
-                          </Button>
-                        </div>
-                      ))}
-                      {pendingItems.length > 8 && (
-                        <p className="text-xs text-gray-500 text-center pt-1">+{pendingItems.length - 8} more in queue</p>
-                      )}
-                    </div>
+                    <Button variant="primary" onClick={() => setShowQueue(true)}>
+                      <List size={15} className="mr-2" /> Open Queue to Introduce Players
+                    </Button>
                   )}
                   {isOrganizer && pendingItems.length === 0 && (
                     <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
