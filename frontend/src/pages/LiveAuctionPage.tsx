@@ -25,7 +25,7 @@ const LiveAuctionPage: React.FC = () => {
   const {
     currentAuction, teams, liveItem, timeRemaining, auctionItems,
     isPaused, activeTieBreak, auctionEnded, reset,
-    setCurrentAuction, setTeams, setLiveItem, setTimeRemaining, setAuctionItems,
+    setCurrentAuction, setTeams, setLiveItem, setTimeRemaining, setAuctionItems, setIsPaused,
   } = useAuctionStore();
 
   const [loading, setLoading] = useState(true);
@@ -49,13 +49,26 @@ const LiveAuctionPage: React.FC = () => {
       setTimeRemaining(tr);
       setAuctionItems(itemsRes.data.data);
 
-      // Find my team — bidder only (organizer has no team)
+      // FIX: Restore pause state from liveItem.paused_at
+      if (li && li.paused_at) {
+        setIsPaused(true);
+      } else {
+        setIsPaused(false);
+      }
+
+      // FIX: Use dedicated participation endpoint instead of my-auctions
       if (user?.role === 'bidder' || user?.role === 'viewer') {
-        const participantRes = await api.get('/users/my-auctions');
-        const myEntry = participantRes.data.data?.find((a: any) => a.id === id);
-        if (myEntry?.team_id) {
-          const found = t.find((tm: Team) => tm.id === myEntry.team_id);
-          setMyTeam(found || null);
+        try {
+          const partRes = await api.get(`/auctions/${id}/my-participation`);
+          if (partRes.data.data?.team) {
+            const teamData = partRes.data.data.team;
+            // Find the full team object from teams array for live budget data
+            const found = t.find((tm: Team) => tm.id === teamData.id);
+            setMyTeam(found || teamData);
+          }
+        } catch {
+          // Not a participant — viewer mode
+          setMyTeam(null);
         }
       }
     } catch {
@@ -70,6 +83,16 @@ const LiveAuctionPage: React.FC = () => {
     fetchState();
     return () => { reset(); };
   }, [id]);
+
+  // FIX: Keep myTeam in sync with live team budget updates from store
+  useEffect(() => {
+    if (myTeam && teams.length > 0) {
+      const updated = teams.find(t => t.id === myTeam.id);
+      if (updated && updated.remaining_budget !== myTeam.remaining_budget) {
+        setMyTeam(updated);
+      }
+    }
+  }, [teams]);
 
   useAuctionSocket({ auctionId: id!, myTeamId: myTeam?.id });
 
@@ -119,7 +142,6 @@ const LiveAuctionPage: React.FC = () => {
   if (!currentAuction) return <div className="text-center py-20 text-gray-400">Auction not found</div>;
 
   const pendingItems = auctionItems.filter((i) => i.status === 'pending');
-
   const auctionIsOver = auctionEnded || currentAuction.status === 'completed';
 
   return (

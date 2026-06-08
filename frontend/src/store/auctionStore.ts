@@ -32,15 +32,9 @@ interface AuctionStore {
   addBidFeed: (entry: { teamId: string; teamName: string; amount: number }) => void;
   setActiveTieBreak: (tb: TieBreakState | null) => void;
   setIsPaused: (v: boolean) => void;
-  /**
-   * Called when player:sold fires.
-   * Subtracts finalPrice from the winning team's remaining_budget in the store.
-   */
+  setAuctionEnded: (v: boolean) => void;
   updateTeamBudget: (teamId: string, finalPrice: number) => void;
   updateLiveItemPrice: (price: number, teamId: string, teamName: string, timeRemaining?: number) => void;
-  /**
-   * Marks an auction item as sold/unsold in the local queue so the counter updates.
-   */
   markAuctionItemSold: (auctionItemId: string) => void;
   reset: () => void;
 }
@@ -80,8 +74,9 @@ const useAuctionStore = create<AuctionStore>((set) => ({
 
   setActiveTieBreak: (activeTieBreak) => set({ activeTieBreak }),
   setIsPaused: (isPaused) => set({ isPaused }),
+  // FIX: expose setAuctionEnded so socket hook can set it
+  setAuctionEnded: (auctionEnded) => set({ auctionEnded }),
 
-  // Subtract the final sale price from the winning team's remaining budget
   updateTeamBudget: (teamId, finalPrice) =>
     set((state) => ({
       teams: state.teams.map((t) =>
@@ -99,7 +94,6 @@ const useAuctionStore = create<AuctionStore>((set) => ({
       timeRemaining: timeRemaining !== undefined ? timeRemaining : state.timeRemaining,
     })),
 
-  // Remove the sold/unsold item from the pending queue so the count updates live
   markAuctionItemSold: (auctionItemId) =>
     set((state) => ({
       auctionItems: state.auctionItems.filter((i) => i.id !== auctionItemId),

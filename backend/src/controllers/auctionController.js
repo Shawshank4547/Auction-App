@@ -78,14 +78,9 @@ const getAuctions = async (req, res) => {
     let where = '';
 
     if (req.user.role === 'organizer') {
-      // Organizers see their own auctions
       where = `WHERE a.organizer_id = $${params.length + 1}`;
       params.push(req.user.id);
     } else if (req.user.role === 'bidder' || req.user.role === 'viewer') {
-      // FIX: Bidders see auctions where:
-      // 1. They are in auction_participants (assigned as team owner), OR
-      // 2. The auction is live (so they can at least discover and request access)
-      // Using OR so assigned bidders always see their auction regardless of status
       where = `WHERE (
         a.id IN (
           SELECT auction_id FROM auction_participants WHERE user_id = $${params.length + 1}
@@ -94,7 +89,6 @@ const getAuctions = async (req, res) => {
       )`;
       params.push(req.user.id);
     }
-    // super_admin sees all — no where clause
 
     if (status) {
       where += where ? ' AND' : 'WHERE';
@@ -242,14 +236,18 @@ const pauseAuction = async (req, res) => {
       `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`, [id]
     );
 
+    let timeRemaining = null;
     if (liveItem.rows.length) {
+      // FIX: capture timeRemaining before pausing so we can send it in the socket event
+      timeRemaining = timerService.getTimeRemaining(liveItem.rows[0].id);
       await timerService.pauseTimer(id, liveItem.rows[0].id);
     }
 
     await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_paused', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
-    if (io) io.to(`auction:${id}`).emit('auction:paused', { auctionId: id });
+    // FIX: include timeRemaining so all clients freeze at the right time
+    if (io) io.to(`auction:${id}`).emit('auction:paused', { auctionId: id, timeRemaining });
 
     return sendSuccess(res, {}, 'Auction paused');
   } catch (err) {
@@ -264,17 +262,23 @@ const resumeAuction = async (req, res) => {
     if (!auction) return sendError(res, 'Auction not found', 404);
 
     const liveItem = await query(
-      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' AND paused_at IS NOT NULL LIMIT 1`, [id]
+      `SELECT id, paused_time_remaining, timer_duration FROM auction_items
+       WHERE auction_id = $1 AND status = 'live' AND paused_at IS NOT NULL LIMIT 1`, [id]
     );
 
+    let timeRemaining = null;
     if (liveItem.rows.length) {
-      await timerService.resumeTimer(id, liveItem.rows[0].id);
+      const item = liveItem.rows[0];
+      // FIX: use paused_time_remaining (what was saved) so clients know what to show
+      timeRemaining = item.paused_time_remaining || item.timer_duration;
+      await timerService.resumeTimer(id, item.id);
     }
 
     await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_resumed', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
-    if (io) io.to(`auction:${id}`).emit('auction:resumed', { auctionId: id });
+    // FIX: include timeRemaining so all clients resume at the right time
+    if (io) io.to(`auction:${id}`).emit('auction:resumed', { auctionId: id, timeRemaining });
 
     return sendSuccess(res, {}, 'Auction resumed');
   } catch (err) {
@@ -282,9 +286,6 @@ const resumeAuction = async (req, res) => {
   }
 };
 
-/**
- * Introduce next player — now sends FULL player details in socket event
- */
 const nextPlayer = async (req, res) => {
   try {
     const { id } = req.params;
@@ -300,7 +301,6 @@ const nextPlayer = async (req, res) => {
       return sendError(res, 'Another player is currently being auctioned', 400);
     }
 
-    // Fetch full player details for the socket event
     const itemResult = await query(
       `SELECT ai.*, p.name AS player_name, p.photo_url, p.base_price, p.category,
               p.role, p.description, p.statistics,
@@ -315,7 +315,6 @@ const nextPlayer = async (req, res) => {
     if (!itemResult.rows.length) return sendError(res, 'Auction item not found or not pending', 404);
 
     const item = itemResult.rows[0];
-    // First bid must be at least the base price (or starting_bid if base_price not set)
     const effectiveBasePrice = item.base_price || item.starting_bid;
 
     await query(
@@ -375,13 +374,28 @@ const getAuctionState = async (req, res) => {
 
     if (!auctionRes.rows.length) return sendError(res, 'Auction not found', 404);
 
+    const liveItem = liveItemRes.rows[0] || null;
+
+    // FIX: Get timeRemaining from memory first, fall back to DB paused_time_remaining
+    let timeRemaining = null;
+    if (liveItem) {
+      timeRemaining = timerService.getTimeRemaining(liveItem.id);
+      if (timeRemaining === null) {
+        // Timer not in memory (server restart or paused) — use DB value
+        if (liveItem.paused_at && liveItem.paused_time_remaining != null) {
+          timeRemaining = liveItem.paused_time_remaining;
+        } else if (liveItem.timer_duration) {
+          // Last resort: use full duration (timer might have just started)
+          timeRemaining = liveItem.timer_duration;
+        }
+      }
+    }
+
     const state = {
       auction: auctionRes.rows[0],
       teams: teamsRes.rows,
-      liveItem: liveItemRes.rows[0] || null,
-      timeRemaining: liveItemRes.rows[0]
-        ? timerService.getTimeRemaining(liveItemRes.rows[0].id)
-        : null,
+      liveItem,
+      timeRemaining,
     };
 
     return sendSuccess(res, state);
@@ -430,9 +444,6 @@ const addParticipant = async (req, res) => {
   }
 };
 
-/**
- * NEW: End/complete the auction
- */
 const endAuction = async (req, res) => {
   try {
     const { id } = req.params;
@@ -445,13 +456,11 @@ const endAuction = async (req, res) => {
       return sendError(res, 'Auction is already completed', 400);
     }
 
-    // Stop any running timer
     const liveItem = await query(
       `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`, [id]
     );
     if (liveItem.rows.length) {
       timerService.stopTimer(liveItem.rows[0].id);
-      // Mark the live item as unsold since auction is ending
       await query(
         `UPDATE auction_items SET status = 'unsold', completed_at = NOW() WHERE id = $1`,
         [liveItem.rows[0].id]
@@ -502,9 +511,52 @@ const getEligibleUsers = async (req, res) => {
   }
 };
 
+/**
+ * NEW: Get the current user's participation details for an auction
+ * Returns their team assignment so the frontend knows which team they bid for
+ */
+const getMyParticipation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const result = await query(
+      `SELECT ap.role, ap.team_id,
+              t.id AS team_id, t.name AS team_name, t.total_budget, t.remaining_budget,
+              t.squad_size, t.max_players, t.logo_url
+       FROM auction_participants ap
+       LEFT JOIN teams t ON ap.team_id = t.id
+       WHERE ap.auction_id = $1 AND ap.user_id = $2`,
+      [id, userId]
+    );
+
+    if (!result.rows.length) {
+      return sendError(res, 'Not a participant of this auction', 403);
+    }
+
+    const row = result.rows[0];
+    const team = row.team_id ? {
+      id: row.team_id,
+      name: row.team_name,
+      total_budget: row.total_budget,
+      remaining_budget: row.remaining_budget,
+      squad_size: row.squad_size,
+      max_players: row.max_players,
+      logo_url: row.logo_url,
+    } : null;
+
+    return sendSuccess(res, {
+      role: row.role,
+      team,
+    });
+  } catch (err) {
+    return sendError(res, 'Failed to fetch participation', 500);
+  }
+};
+
 module.exports = {
   createAuction, getAuctions, getAuction, updateAuction,
   startAuction, pauseAuction, resumeAuction, nextPlayer,
   getAuctionState, getAuctionItems, addParticipant, endAuction,
-  getEligibleUsers,
+  getEligibleUsers, getMyParticipation,
 };

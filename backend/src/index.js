@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -52,6 +53,11 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// FIX: Serve locally uploaded files (dev mode when R2 is not configured)
+// In production with R2 this folder will be empty, so no harm done
+const uploadsDir = path.join(process.cwd(), 'uploads');
+app.use('/uploads', express.static(uploadsDir));
 
 // Rate limiting
 const limiter = rateLimit({

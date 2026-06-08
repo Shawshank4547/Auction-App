@@ -1,6 +1,8 @@
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
 
 const R2_CONFIGURED =
   process.env.R2_ACCOUNT_ID &&
@@ -24,14 +26,40 @@ if (R2_CONFIGURED) {
 const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'auction-platform';
 const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
 
+// Local uploads directory for dev mode
+const LOCAL_UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+const LOCAL_PUBLIC_PATH = '/uploads'; // served by express static
+
 /**
- * Upload a file buffer to R2.
- * Returns null silently if R2 is not configured (dev/local mode).
+ * Ensure local uploads dir exists
+ */
+const ensureLocalDir = (folder) => {
+  const dir = path.join(LOCAL_UPLOADS_DIR, folder);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+};
+
+/**
+ * Upload a file buffer to R2 (or local disk in dev).
  */
 const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
+  // Local fallback when R2 is not configured
   if (!R2_CONFIGURED || !s3Client) {
-    console.warn('[storage] R2 not configured — file upload skipped, returning null');
-    return null;
+    try {
+      const extension = mimetype.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+      const filename = `${uuidv4()}.${extension}`;
+      const dir = ensureLocalDir(folder);
+      const filepath = path.join(dir, filename);
+      fs.writeFileSync(filepath, buffer);
+      const publicUrl = `${LOCAL_PUBLIC_PATH}/${folder}/${filename}`;
+      console.info(`[storage] R2 not configured — saved locally: ${publicUrl}`);
+      return publicUrl;
+    } catch (err) {
+      console.error('[storage] Local save failed:', err);
+      return null;
+    }
   }
 
   const extension = mimetype.split('/')[1] || 'jpg';
@@ -51,11 +79,26 @@ const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
 };
 
 /**
- * Delete a file from R2 by its public URL.
- * No-ops silently if R2 is not configured.
+ * Delete a file from R2 (or local disk in dev) by its public URL.
  */
 const deleteFile = async (publicUrl) => {
-  if (!R2_CONFIGURED || !s3Client || !publicUrl || !PUBLIC_URL) return;
+  if (!publicUrl) return;
+
+  // Local file
+  if (publicUrl.startsWith(LOCAL_PUBLIC_PATH)) {
+    try {
+      const relativePath = publicUrl.replace(LOCAL_PUBLIC_PATH, '');
+      const filepath = path.join(LOCAL_UPLOADS_DIR, relativePath);
+      if (fs.existsSync(filepath)) {
+        fs.unlinkSync(filepath);
+      }
+    } catch (err) {
+      console.error('[storage] Local delete failed:', err);
+    }
+    return;
+  }
+
+  if (!R2_CONFIGURED || !s3Client || !PUBLIC_URL) return;
   const key = publicUrl.replace(`${PUBLIC_URL}/`, '');
   await s3Client.send(
     new DeleteObjectCommand({
