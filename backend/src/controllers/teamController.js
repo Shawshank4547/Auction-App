@@ -7,10 +7,16 @@ const createTeam = async (req, res) => {
     const { auctionId } = req.params;
     const { name, ownerId, totalBudget, minPlayers, maxPlayers } = req.body;
 
-    const auctionCheck = await query(
-      'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [auctionId, req.user.id]
-    );
+    // Allow organizer OR super_admin to manage
+    let auctionCheck;
+    if (req.user.role === 'super_admin') {
+      auctionCheck = await query('SELECT id FROM auctions WHERE id = $1', [auctionId]);
+    } else {
+      auctionCheck = await query(
+        'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
+        [auctionId, req.user.id]
+      );
+    }
     if (!auctionCheck.rows.length) return sendError(res, 'Auction not found', 404);
 
     let logoUrl = null;
@@ -26,17 +32,21 @@ const createTeam = async (req, res) => {
       [auctionId, ownerId || null, name, logoUrl, budget, parseInt(minPlayers) || 0, parseInt(maxPlayers) || 25]
     );
 
-    // If owner provided, add them as participant
+    const team = result.rows[0];
+
+    // FIX: If owner provided, ensure they are added as an auction participant
+    // so they can see and join the auction
     if (ownerId) {
       await query(
         `INSERT INTO auction_participants (auction_id, user_id, team_id, role)
          VALUES ($1, $2, $3, 'bidder')
-         ON CONFLICT (auction_id, user_id) DO UPDATE SET team_id = $3`,
-        [auctionId, ownerId, result.rows[0].id]
+         ON CONFLICT (auction_id, user_id)
+         DO UPDATE SET team_id = $3, role = 'bidder'`,
+        [auctionId, ownerId, team.id]
       );
     }
 
-    return sendSuccess(res, result.rows[0], 'Team created', 201);
+    return sendSuccess(res, team, 'Team created', 201);
   } catch (err) {
     if (err.code === '23505') return sendError(res, 'Team name already exists in this auction', 409);
     return sendError(res, 'Failed to create team', 500);
@@ -89,10 +99,16 @@ const updateTeam = async (req, res) => {
   try {
     const { auctionId, teamId } = req.params;
 
-    const auctionCheck = await query(
-      'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [auctionId, req.user.id]
-    );
+    // Allow organizer OR super_admin to manage
+    let auctionCheck;
+    if (req.user.role === 'super_admin') {
+      auctionCheck = await query('SELECT id FROM auctions WHERE id = $1', [auctionId]);
+    } else {
+      auctionCheck = await query(
+        'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
+        [auctionId, req.user.id]
+      );
+    }
     if (!auctionCheck.rows.length) return sendError(res, 'Auction not found', 404);
 
     const existing = await query(
@@ -120,11 +136,42 @@ const updateTeam = async (req, res) => {
         updated_at = NOW()
        WHERE id = $7 AND auction_id = $8
        RETURNING *`,
-      [name, logoUrl, ownerId, minPlayers ? parseInt(minPlayers) : null,
+      [name, logoUrl, ownerId || null, minPlayers ? parseInt(minPlayers) : null,
        maxPlayers ? parseInt(maxPlayers) : null, isActive, teamId, auctionId]
     );
 
-    return sendSuccess(res, result.rows[0], 'Team updated');
+    const team = result.rows[0];
+
+    // FIX: Sync auction_participants when owner changes
+    const prevOwnerId = existing.rows[0].owner_id;
+    const newOwnerId = ownerId || null;
+
+    if (newOwnerId && newOwnerId !== prevOwnerId) {
+      // Add new owner as participant
+      await query(
+        `INSERT INTO auction_participants (auction_id, user_id, team_id, role)
+         VALUES ($1, $2, $3, 'bidder')
+         ON CONFLICT (auction_id, user_id)
+         DO UPDATE SET team_id = $3, role = 'bidder'`,
+        [auctionId, newOwnerId, teamId]
+      );
+    }
+
+    if (prevOwnerId && prevOwnerId !== newOwnerId) {
+      // Remove old owner's participant record (only if they own no other team in this auction)
+      const otherTeams = await query(
+        `SELECT id FROM teams WHERE auction_id = $1 AND owner_id = $2 AND id != $3`,
+        [auctionId, prevOwnerId, teamId]
+      );
+      if (!otherTeams.rows.length) {
+        await query(
+          `DELETE FROM auction_participants WHERE auction_id = $1 AND user_id = $2`,
+          [auctionId, prevOwnerId]
+        );
+      }
+    }
+
+    return sendSuccess(res, team, 'Team updated');
   } catch (err) {
     return sendError(res, 'Failed to update team', 500);
   }
@@ -142,6 +189,14 @@ const deleteTeam = async (req, res) => {
 
     const team = await query('SELECT * FROM teams WHERE id = $1 AND auction_id = $2', [teamId, auctionId]);
     if (!team.rows.length) return sendError(res, 'Team not found', 404);
+
+    // Remove owner from participants when team is deleted
+    if (team.rows[0].owner_id) {
+      await query(
+        `DELETE FROM auction_participants WHERE auction_id = $1 AND user_id = $2`,
+        [auctionId, team.rows[0].owner_id]
+      );
+    }
 
     if (team.rows[0].logo_url) await deleteFile(team.rows[0].logo_url).catch(() => {});
     await query('DELETE FROM teams WHERE id = $1', [teamId]);

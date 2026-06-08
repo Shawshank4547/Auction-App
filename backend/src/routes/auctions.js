@@ -28,6 +28,5 @@ router.post('/:id/participants',
   authenticate, authorize('organizer', 'super_admin'),
   [body('userId').notEmpty()], validate,
   auctionController.addParticipant
-);
-
+);router.get('/:id/eligible-users', authenticate, authorize('organizer', 'super_admin'), auctionController.getEligibleUsers);
 module.exports = router;

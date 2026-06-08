@@ -149,6 +149,12 @@ const _createInterval = (auctionId, auctionItemId, initialTime, extensionsUsed) 
     timeRemaining--;
     broadcastTimer(auctionId, auctionItemId, timeRemaining);
 
+    // Update in-memory state so getTimeRemaining() and pauseTimer() see latest value
+    const existing = activeTimers.get(auctionItemId);
+    if (existing) {
+      existing.timeRemaining = timeRemaining;
+    }
+
     if (timeRemaining <= 0) {
       stopTimer(auctionItemId);
       await handlePlayerSold(auctionId, auctionItemId);
@@ -174,7 +180,10 @@ const startTimer = async (auctionId, auctionItemId, durationSeconds) => {
 
   // Update DB
   await query(
-    `UPDATE auction_items SET timer_start = NOW(), timer_duration = $1, status = 'live', started_at = COALESCE(started_at, NOW())
+    `UPDATE auction_items
+     SET timer_start = NOW(), timer_duration = $1, status = 'live',
+         paused_at = NULL, paused_time_remaining = NULL,
+         started_at = COALESCE(started_at, NOW())
      WHERE id = $2`,
     [durationSeconds, auctionItemId]
   );
@@ -222,55 +231,100 @@ const extendTimer = async (auctionId, auctionItemId, extensionSeconds, maxExtens
 };
 
 /**
- * Pause timer — snapshot current timeRemaining to DB BEFORE stopping interval
+ * Pause timer.
+ * FIX: Capture time from in-memory state, persist to DB FIRST, then stop interval.
+ * This prevents a race condition where the interval fires between DB write and stop.
  */
 const pauseTimer = async (auctionId, auctionItemId) => {
   const timer = activeTimers.get(auctionItemId);
-  if (!timer) return null;
+  if (!timer) {
+    // Timer not in memory (e.g. server restart) — try to read from DB
+    const result = await query(
+      `SELECT timer_duration, paused_time_remaining FROM auction_items WHERE id = $1`,
+      [auctionItemId]
+    );
+    if (!result.rows.length) return null;
+    // Already paused or no timer — just set paused_at
+    await query(
+      `UPDATE auction_items SET paused_at = NOW() WHERE id = $1 AND paused_at IS NULL`,
+      [auctionItemId]
+    );
+    return result.rows[0].paused_time_remaining || result.rows[0].timer_duration;
+  }
 
-  // Capture remaining time BEFORE stopping
+  // Capture current remaining time from in-memory state
   const remaining = timer.timeRemaining;
   const extensionsUsed = timer.extensionsUsed;
 
-  // Stop the interval
+  // FIX: Save to DB BEFORE stopping the interval (prevents race condition)
+  await query(
+    `UPDATE auction_items
+     SET paused_at = NOW(), paused_time_remaining = $1, extensions_used = $2
+     WHERE id = $3`,
+    [remaining, extensionsUsed, auctionItemId]
+  );
+
+  // Now safe to stop the interval
   clearInterval(timer.intervalId);
   activeTimers.delete(auctionItemId);
-
-  // Persist to DB so resume can restore it
-  await query(
-    `UPDATE auction_items SET paused_at = NOW(), paused_time_remaining = $1
-     WHERE id = $2`,
-    [remaining, auctionItemId]
-  );
 
   broadcastTimer(auctionId, auctionItemId, remaining, 'paused');
   return remaining;
 };
 
 /**
- * Resume timer from paused state — restores exact remaining time and extensions
+ * Resume timer from paused state.
+ * FIX: Guard against null/zero paused_time_remaining.
+ * FIX: Clear paused_at in DB BEFORE starting interval to prevent double-resume.
  */
 const resumeTimer = async (auctionId, auctionItemId) => {
+  // Guard: don't resume if already running in memory
+  if (activeTimers.has(auctionItemId)) {
+    logger.warn(`resumeTimer called but timer already running for item ${auctionItemId}`);
+    return;
+  }
+
   const itemResult = await query(
-    `SELECT paused_time_remaining, extensions_used FROM auction_items WHERE id = $1`,
+    `SELECT paused_time_remaining, extensions_used, timer_duration, paused_at
+     FROM auction_items WHERE id = $1`,
     [auctionItemId]
   );
-  if (!itemResult.rows.length) return;
 
-  const { paused_time_remaining, extensions_used } = itemResult.rows[0];
-  if (paused_time_remaining == null) return;
+  if (!itemResult.rows.length) {
+    logger.error(`resumeTimer: auction item ${auctionItemId} not found`);
+    return;
+  }
 
-  // Clear pause flags in DB
+  const { paused_time_remaining, extensions_used, timer_duration, paused_at } = itemResult.rows[0];
+
+  // FIX: Guard — if not actually paused, do nothing
+  if (!paused_at) {
+    logger.warn(`resumeTimer: item ${auctionItemId} is not paused`);
+    return;
+  }
+
+  // FIX: Use paused_time_remaining; fall back to full duration only if truly null
+  // Never restart from full duration if we have a saved value
+  const resumeFrom = (paused_time_remaining != null && paused_time_remaining > 0)
+    ? paused_time_remaining
+    : timer_duration;
+
+  if (!resumeFrom || resumeFrom <= 0) {
+    logger.error(`resumeTimer: no valid time to resume from for item ${auctionItemId}`);
+    return;
+  }
+
+  // FIX: Clear pause flags in DB BEFORE creating interval (prevents double-resume on race)
   await query(
     `UPDATE auction_items SET paused_at = NULL, paused_time_remaining = NULL WHERE id = $1`,
     [auctionItemId]
   );
 
-  // Recreate interval with saved state
-  _createInterval(auctionId, auctionItemId, paused_time_remaining, extensions_used || 0);
+  // Recreate interval with saved remaining time and extensions
+  _createInterval(auctionId, auctionItemId, resumeFrom, extensions_used || 0);
 
-  // Broadcast immediately so clients see correct time
-  broadcastTimer(auctionId, auctionItemId, paused_time_remaining, 'resumed');
+  // Broadcast immediately so clients see correct resumed time
+  broadcastTimer(auctionId, auctionItemId, resumeFrom, 'resumed');
 };
 
 /**

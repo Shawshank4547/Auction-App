@@ -78,10 +78,20 @@ const getAuctions = async (req, res) => {
     let where = '';
 
     if (req.user.role === 'organizer') {
+      // Organizers see their own auctions
       where = `WHERE a.organizer_id = $${params.length + 1}`;
       params.push(req.user.id);
     } else if (req.user.role === 'bidder' || req.user.role === 'viewer') {
-      where = `WHERE a.id IN (SELECT auction_id FROM auction_participants WHERE user_id = $${params.length + 1})`;
+      // FIX: Bidders see auctions where:
+      // 1. They are in auction_participants (assigned as team owner), OR
+      // 2. The auction is live (so they can at least discover and request access)
+      // Using OR so assigned bidders always see their auction regardless of status
+      where = `WHERE (
+        a.id IN (
+          SELECT auction_id FROM auction_participants WHERE user_id = $${params.length + 1}
+        )
+        OR a.status IN ('live', 'round2_live', 'round3_live')
+      )`;
       params.push(req.user.id);
     }
     // super_admin sees all — no where clause
@@ -464,8 +474,37 @@ const endAuction = async (req, res) => {
   }
 };
 
+const getEligibleUsers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { search = '' } = req.query;
+
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
+
+    const result = await query(
+      `SELECT id, name, email, role, avatar_url
+       FROM users
+       WHERE role = 'bidder'
+         AND is_active = true
+         AND (
+           name ILIKE $1
+           OR email ILIKE $1
+         )
+       ORDER BY name ASC
+       LIMIT 20`,
+      [`%${search}%`]
+    );
+
+    return sendSuccess(res, result.rows);
+  } catch (err) {
+    return sendError(res, 'Failed to fetch eligible users', 500);
+  }
+};
+
 module.exports = {
   createAuction, getAuctions, getAuction, updateAuction,
   startAuction, pauseAuction, resumeAuction, nextPlayer,
   getAuctionState, getAuctionItems, addParticipant, endAuction,
+  getEligibleUsers,
 };

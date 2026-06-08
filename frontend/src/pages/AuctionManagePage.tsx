@@ -10,9 +10,16 @@ import Input from '../components/shared/Input';
 import Modal from '../components/shared/Modal';
 import Spinner from '../components/shared/Spinner';
 import Badge from '../components/shared/Badge';
+import UserSearchPicker from '../components/shared/UserSearchPicker';
 import { formatCurrency, shortCurrency } from '../utils/format';
 
 type Tab = 'settings' | 'teams' | 'players';
+
+interface TeamFormOwner {
+  id: string;
+  name: string;
+  email: string;
+}
 
 const AuctionManagePage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -29,7 +36,8 @@ const AuctionManagePage: React.FC = () => {
   // Team form
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [editingTeam, setEditingTeam] = useState<Team | null>(null);
-  const [teamForm, setTeamForm] = useState({ name: '', totalBudget: '', ownerId: '', maxPlayers: '25' });
+  const [teamForm, setTeamForm] = useState({ name: '', totalBudget: '', maxPlayers: '25' });
+  const [teamOwner, setTeamOwner] = useState<TeamFormOwner | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
 
   // Player form
@@ -54,7 +62,8 @@ const AuctionManagePage: React.FC = () => {
 
   const openAddTeam = () => {
     setEditingTeam(null);
-    setTeamForm({ name: '', totalBudget: '', ownerId: '', maxPlayers: '25' });
+    setTeamForm({ name: '', totalBudget: '', maxPlayers: '25' });
+    setTeamOwner(null);
     setShowTeamModal(true);
   };
 
@@ -63,9 +72,14 @@ const AuctionManagePage: React.FC = () => {
     setTeamForm({
       name: team.name,
       totalBudget: String(team.total_budget),
-      ownerId: team.owner_id || '',
       maxPlayers: String(team.max_players),
     });
+    // Pre-populate owner if team has one
+    setTeamOwner(
+      team.owner_id && team.owner_name
+        ? { id: team.owner_id, name: team.owner_name, email: (team as any).owner_email || '' }
+        : null
+    );
     setShowTeamModal(true);
   };
 
@@ -77,19 +91,27 @@ const AuctionManagePage: React.FC = () => {
       if (editingTeam) {
         const res = await api.patch(`/auctions/${id}/teams/${editingTeam.id}`, {
           name: teamForm.name,
-          ownerId: teamForm.ownerId || undefined,
+          ownerId: teamOwner?.id || undefined,
           maxPlayers: parseInt(teamForm.maxPlayers) || 25,
         });
-        setTeams((prev) => prev.map((t) => t.id === editingTeam.id ? res.data.data : t));
+        setTeams((prev) => prev.map((t) => t.id === editingTeam.id ? {
+          ...res.data.data,
+          owner_name: teamOwner?.name,
+          owner_email: teamOwner?.email,
+        } : t));
         toast.success('Team updated');
       } else {
         const res = await api.post(`/auctions/${id}/teams`, {
           name: teamForm.name,
           totalBudget: parseInt(teamForm.totalBudget),
-          ownerId: teamForm.ownerId || undefined,
+          ownerId: teamOwner?.id || undefined,
           maxPlayers: parseInt(teamForm.maxPlayers) || 25,
         });
-        setTeams((prev) => [...prev, res.data.data]);
+        setTeams((prev) => [...prev, {
+          ...res.data.data,
+          owner_name: teamOwner?.name,
+          owner_email: teamOwner?.email,
+        }]);
         toast.success('Team created');
       }
       setShowTeamModal(false);
@@ -170,8 +192,7 @@ const AuctionManagePage: React.FC = () => {
       }
       setShowPlayerModal(false);
     } catch (err: any) {
-      const msg = err.response?.data?.message || 'Failed to save player';
-      toast.error(msg);
+      toast.error(err.response?.data?.message || 'Failed to save player');
     } finally {
       setPlayerLoading(false);
     }
@@ -252,7 +273,13 @@ const AuctionManagePage: React.FC = () => {
             <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-4">
               <div className="flex-1">
                 <p className="font-semibold text-white">{t.name}</p>
-                <p className="text-xs text-gray-500">{t.owner_name || 'No owner assigned'} · {t.squad_size} players</p>
+                <p className="text-xs text-gray-500">
+                  {t.owner_name
+                    ? <span className="text-blue-400">{t.owner_name}</span>
+                    : <span className="italic">No owner assigned</span>
+                  }
+                  {' · '}{t.squad_size} players
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-green-400 font-semibold">{shortCurrency(t.remaining_budget)}</p>
@@ -313,7 +340,6 @@ const AuctionManagePage: React.FC = () => {
                 {p.status === 'draft' && (
                   <Button size="sm" variant="ghost" onClick={() => handleSchedulePlayer(p.id)}>Schedule</Button>
                 )}
-                {/* Edit allowed for draft/available/unsold players */}
                 {['draft', 'available', 'unsold'].includes(p.status) && (
                   <button
                     onClick={() => openEditPlayer(p)}
@@ -370,33 +396,97 @@ const AuctionManagePage: React.FC = () => {
       )}
 
       {/* Add / Edit Team Modal */}
-      <Modal isOpen={showTeamModal} onClose={() => setShowTeamModal(false)} title={editingTeam ? 'Edit Team' : 'Add Team'}>
+      <Modal
+        isOpen={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
+        title={editingTeam ? 'Edit Team' : 'Add Team'}
+      >
         <form onSubmit={handleSaveTeam} className="space-y-4">
-          <Input label="Team Name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required />
+          <Input
+            label="Team Name"
+            value={teamForm.name}
+            onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
+            required
+          />
+
           {!editingTeam && (
-            <Input label="Total Budget" type="number" value={teamForm.totalBudget} onChange={(e) => setTeamForm({ ...teamForm, totalBudget: e.target.value })} placeholder="e.g. 10000000" required />
+            <Input
+              label="Total Budget"
+              type="number"
+              value={teamForm.totalBudget}
+              onChange={(e) => setTeamForm({ ...teamForm, totalBudget: e.target.value })}
+              placeholder="e.g. 10000000"
+              required
+            />
           )}
           {editingTeam && (
             <p className="text-xs text-gray-500 bg-gray-800 rounded-lg px-3 py-2">
               Budget cannot be changed after team creation (current: {shortCurrency(editingTeam.total_budget)}).
             </p>
           )}
-          <Input label="Max Players" type="number" value={teamForm.maxPlayers} onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })} />
-          <Input label="Owner User ID (optional)" value={teamForm.ownerId} onChange={(e) => setTeamForm({ ...teamForm, ownerId: e.target.value })} placeholder="UUID of the bidder" />
+
+          <Input
+            label="Max Players"
+            type="number"
+            value={teamForm.maxPlayers}
+            onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })}
+          />
+
+          {/* Owner picker */}
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-gray-300">
+              Team Owner / Manager
+              <span className="text-gray-500 font-normal ml-1">(optional)</span>
+            </label>
+            {id && (
+              <UserSearchPicker
+                auctionId={id}
+                value={teamOwner}
+                onChange={setTeamOwner}
+              />
+            )}
+            <p className="text-xs text-gray-500">
+              The assigned bidder can place bids for this team in the live auction.
+            </p>
+          </div>
+
           <div className="flex gap-2 pt-2">
-            <Button type="button" variant="ghost" fullWidth onClick={() => setShowTeamModal(false)}>Cancel</Button>
-            <Button type="submit" fullWidth loading={teamLoading}>{editingTeam ? 'Save Changes' : 'Create Team'}</Button>
+            <Button type="button" variant="ghost" fullWidth onClick={() => setShowTeamModal(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" fullWidth loading={teamLoading}>
+              {editingTeam ? 'Save Changes' : 'Create Team'}
+            </Button>
           </div>
         </form>
       </Modal>
 
       {/* Add / Edit Player Modal */}
-      <Modal isOpen={showPlayerModal} onClose={() => setShowPlayerModal(false)} title={editingPlayer ? 'Edit Player' : 'Add Player'}>
+      <Modal
+        isOpen={showPlayerModal}
+        onClose={() => setShowPlayerModal(false)}
+        title={editingPlayer ? 'Edit Player' : 'Add Player'}
+      >
         <form onSubmit={handleSavePlayer} className="space-y-3">
-          <Input label="Player Name *" value={playerForm.name} onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })} required />
+          <Input
+            label="Player Name *"
+            value={playerForm.name}
+            onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })}
+            required
+          />
           <div className="grid grid-cols-2 gap-3">
-            <Input label="Category" value={playerForm.category} onChange={(e) => setPlayerForm({ ...playerForm, category: e.target.value })} placeholder="Batsman, Bowler…" />
-            <Input label="Role" value={playerForm.role} onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })} placeholder="Opening, Pace…" />
+            <Input
+              label="Category"
+              value={playerForm.category}
+              onChange={(e) => setPlayerForm({ ...playerForm, category: e.target.value })}
+              placeholder="Batsman, Bowler…"
+            />
+            <Input
+              label="Role"
+              value={playerForm.role}
+              onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })}
+              placeholder="Opening, Pace…"
+            />
           </div>
           <Input
             label="Base Price *"
@@ -407,7 +497,11 @@ const AuctionManagePage: React.FC = () => {
             required
             min="0"
           />
-          <Input label="Description" value={playerForm.description} onChange={(e) => setPlayerForm({ ...playerForm, description: e.target.value })} />
+          <Input
+            label="Description"
+            value={playerForm.description}
+            onChange={(e) => setPlayerForm({ ...playerForm, description: e.target.value })}
+          />
           <div>
             <label className="text-sm font-medium text-gray-300 block mb-1">
               Photo {editingPlayer?.photo_url ? '(leave blank to keep existing)' : ''}
@@ -423,8 +517,12 @@ const AuctionManagePage: React.FC = () => {
             )}
           </div>
           <div className="flex gap-2 pt-2">
-            <Button type="button" variant="ghost" fullWidth onClick={() => setShowPlayerModal(false)}>Cancel</Button>
-            <Button type="submit" fullWidth loading={playerLoading}>{editingPlayer ? 'Save Changes' : 'Create Player'}</Button>
+            <Button type="button" variant="ghost" fullWidth onClick={() => setShowPlayerModal(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" fullWidth loading={playerLoading}>
+              {editingPlayer ? 'Save Changes' : 'Create Player'}
+            </Button>
           </div>
         </form>
       </Modal>
