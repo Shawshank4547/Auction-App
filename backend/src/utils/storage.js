@@ -2,26 +2,38 @@ const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/cl
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuidv4 } = require('uuid');
 
-const s3Client = new S3Client({
-  region: 'auto',
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-  },
-});
+const R2_CONFIGURED =
+  process.env.R2_ACCOUNT_ID &&
+  process.env.R2_ACCESS_KEY_ID &&
+  process.env.R2_SECRET_ACCESS_KEY &&
+  process.env.R2_PUBLIC_URL;
+
+let s3Client = null;
+
+if (R2_CONFIGURED) {
+  s3Client = new S3Client({
+    region: 'auto',
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
+  });
+}
 
 const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'auction-platform';
 const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
 
 /**
- * Upload a file buffer to R2
- * @param {Buffer} buffer - File buffer
- * @param {string} mimetype - File mime type
- * @param {string} folder - Destination folder (players, teams, etc.)
- * @returns {Promise<string>} Public URL of uploaded file
+ * Upload a file buffer to R2.
+ * Returns null silently if R2 is not configured (dev/local mode).
  */
 const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
+  if (!R2_CONFIGURED || !s3Client) {
+    console.warn('[storage] R2 not configured — file upload skipped, returning null');
+    return null;
+  }
+
   const extension = mimetype.split('/')[1] || 'jpg';
   const key = `${folder}/${uuidv4()}.${extension}`;
 
@@ -39,11 +51,11 @@ const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
 };
 
 /**
- * Delete a file from R2 by its public URL
- * @param {string} publicUrl - Public URL of the file
+ * Delete a file from R2 by its public URL.
+ * No-ops silently if R2 is not configured.
  */
 const deleteFile = async (publicUrl) => {
-  if (!publicUrl || !PUBLIC_URL) return;
+  if (!R2_CONFIGURED || !s3Client || !publicUrl || !PUBLIC_URL) return;
   const key = publicUrl.replace(`${PUBLIC_URL}/`, '');
   await s3Client.send(
     new DeleteObjectCommand({
@@ -54,9 +66,13 @@ const deleteFile = async (publicUrl) => {
 };
 
 /**
- * Generate a presigned upload URL (for direct browser uploads)
+ * Generate a presigned upload URL (for direct browser uploads).
+ * Throws if R2 is not configured.
  */
 const getPresignedUploadUrl = async (folder, mimetype) => {
+  if (!R2_CONFIGURED || !s3Client) {
+    throw new Error('R2 storage is not configured');
+  }
   const extension = mimetype.split('/')[1] || 'jpg';
   const key = `${folder}/${uuidv4()}.${extension}`;
   const command = new PutObjectCommand({

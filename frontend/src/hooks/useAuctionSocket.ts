@@ -1,16 +1,16 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import socketService from '../services/socketService';
 import useAuctionStore from '../store/auctionStore';
 import useAuthStore from '../store/authStore';
 import { AuctionItem, ChatMessage } from '../types';
 
-interface UsedAuctionSocketOptions {
+interface UseAuctionSocketOptions {
   auctionId: string;
   myTeamId?: string | null;
 }
 
-export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptions) => {
+export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOptions) => {
   const {
     setLiveItem,
     setTimeRemaining,
@@ -20,7 +20,8 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
     addChatMessage,
     setActiveTieBreak,
     setIsPaused,
-    setCurrentAuction,
+    updateTeamBudget,
+    markAuctionItemSold,
   } = useAuctionStore();
 
   const { accessToken } = useAuthStore();
@@ -28,11 +29,10 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
   useEffect(() => {
     if (!accessToken) return;
 
-    // Ensure connected
     const socket = socketService.connect(accessToken);
     socketService.joinAuction(auctionId);
 
-    // ── Auction events ──────────────────────────────────────
+    // ── Auction lifecycle ───────────────────────────────────
     const offStarted = socketService.on('auction:started', () => {
       toast.success('Auction has started!');
     });
@@ -44,7 +44,13 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
 
     const offResumed = socketService.on('auction:resumed', () => {
       setIsPaused(false);
-      toast('Auction resumed', { icon: '▶️' });
+      toast.success('Auction resumed');
+    });
+
+    const offEnded = socketService.on('auction:ended', () => {
+      setLiveItem(null);
+      setTimeRemaining(null);
+      toast('Auction has ended', { icon: '🏁', duration: 6000 });
     });
 
     // ── Player events ───────────────────────────────────────
@@ -52,15 +58,28 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
       auctionItemId: string;
       playerId: string;
       playerName: string;
+      photoUrl: string | null;
+      category: string | null;
+      role: string | null;
+      description: string | null;
+      statistics: Record<string, unknown>;
       basePrice: number;
+      roundNumber: number;
+      sequenceOrder: number;
     }>('player:introduced', (data) => {
+      // Build a complete AuctionItem from the full event data
       setLiveItem({
         id: data.auctionItemId,
         auction_id: auctionId,
         player_id: data.playerId,
         player_name: data.playerName,
-        round_number: 1,
-        sequence_order: 0,
+        photo_url: data.photoUrl || null,
+        category: data.category || null,
+        role: data.role || null,
+        statistics: data.statistics || {},
+        base_price: data.basePrice,
+        round_number: data.roundNumber,
+        sequence_order: data.sequenceOrder,
         status: 'live',
         current_price: null,
         current_leader_team_id: null,
@@ -71,6 +90,8 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
         started_at: new Date().toISOString(),
         completed_at: null,
       } as AuctionItem);
+      // Reset tie-break state for new player
+      setActiveTieBreak(null);
       toast(`🏏 Now auctioning: ${data.playerName}`);
     });
 
@@ -84,17 +105,23 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
     }>('player:sold', (data) => {
       setLiveItem(null);
       setTimeRemaining(null);
+      setActiveTieBreak(null);
+      // Update team budget in store so TeamBudgetBar reflects immediately
+      updateTeamBudget(data.teamId, data.finalPrice);
+      // Remove from queue
+      markAuctionItemSold(data.auctionItemId);
       const isMyTeam = data.teamId === myTeamId;
       if (isMyTeam) {
-        toast.success(`🎉 ${data.playerName} sold to YOUR team for ₹${data.finalPrice.toLocaleString('en-IN')}!`);
+        toast.success(`🎉 ${data.playerName} sold to YOUR team for ₹${data.finalPrice.toLocaleString('en-IN')}!`, { duration: 5000 });
       } else {
-        toast(`${data.playerName} sold to ${data.teamName}`, { icon: '🔨' });
+        toast(`${data.playerName} → ${data.teamName} for ₹${data.finalPrice.toLocaleString('en-IN')}`, { icon: '🔨', duration: 4000 });
       }
     });
 
-    const offUnsold = socketService.on<{ playerName: string }>('player:unsold', (data) => {
+    const offUnsold = socketService.on<{ auctionItemId: string; playerName: string }>('player:unsold', (data) => {
       setLiveItem(null);
       setTimeRemaining(null);
+      markAuctionItemSold(data.auctionItemId);
       toast(`${data.playerName} went unsold`, { icon: '📋' });
     });
 
@@ -114,7 +141,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
       toast.error(`Bid rejected: ${data.reason}`);
     });
 
-    // ── Timer events ─────────────────────────────────────────
+    // ── Timer ────────────────────────────────────────────────
     const offTimerTick = socketService.on<{
       auctionItemId: string;
       timeRemaining: number;
@@ -123,7 +150,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
       setTimeRemaining(data.timeRemaining);
     });
 
-    // ── Tie-break events ──────────────────────────────────────
+    // ── Tie-break ─────────────────────────────────────────────
     const offTieBreakStart = socketService.on<{
       auctionItemId: string;
       tieBreakRoundId: string;
@@ -141,7 +168,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
         submitted: false,
       });
       if (isEligible) {
-        toast('🔒 Sealed bid tie-break! Submit your best offer.', { duration: 5000 });
+        toast('🔒 Sealed bid tie-break! Submit your best offer.', { duration: 6000 });
       } else {
         toast('Tie-break round started', { icon: '⚖️' });
       }
@@ -163,7 +190,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
       toast.success('Sealed bid submitted!');
     });
 
-    // ── Chat events ───────────────────────────────────────────
+    // ── Chat ──────────────────────────────────────────────────
     const offChatHistory = socketService.on<ChatMessage[]>('chat:history', (msgs) => {
       setChatHistory(msgs);
     });
@@ -174,20 +201,12 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UsedAuctionSocketOptio
 
     return () => {
       socketService.leaveAuction(auctionId);
-      offStarted();
-      offPaused();
-      offResumed();
-      offIntroduced();
-      offSold();
-      offUnsold();
-      offBidAccepted();
-      offBidRejected();
+      offStarted(); offPaused(); offResumed(); offEnded();
+      offIntroduced(); offSold(); offUnsold();
+      offBidAccepted(); offBidRejected();
       offTimerTick();
-      offTieBreakStart();
-      offTieBreakEnd();
-      offTieBreakSubmitted();
-      offChatHistory();
-      offChatMessage();
+      offTieBreakStart(); offTieBreakEnd(); offTieBreakSubmitted();
+      offChatHistory(); offChatMessage();
     };
   }, [auctionId, accessToken, myTeamId]);
 };

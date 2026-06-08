@@ -34,10 +34,23 @@ const processQueue = (error: unknown, token: string | null = null) => {
   failedQueue = [];
 };
 
+// Auth routes that should NEVER trigger a token refresh retry
+const AUTH_ROUTES = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/google', '/auth/verify-otp', '/auth/resend-otp'];
+
+const isAuthRoute = (url?: string) => {
+  if (!url) return false;
+  return AUTH_ROUTES.some((route) => url.includes(route));
+};
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+
+    // Never retry auth routes — they should surface errors directly to the UI
+    if (isAuthRoute(originalRequest.url)) {
+      return Promise.reject(error);
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
@@ -57,6 +70,7 @@ api.interceptors.response.use(
       const refreshToken = authStoreRef?.getState().refreshToken;
       if (!refreshToken) {
         authStoreRef?.getState().logout();
+        isRefreshing = false;
         return Promise.reject(error);
       }
 

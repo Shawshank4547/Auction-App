@@ -3,6 +3,16 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 const timerService = require('../services/timerService');
 const auditService = require('../services/auditService');
 
+// Helper: check if user can manage this auction (owner OR super_admin)
+const canManageAuction = async (auctionId, user) => {
+  if (user.role === 'super_admin') {
+    const res = await query('SELECT id, organizer_id FROM auctions WHERE id = $1', [auctionId]);
+    return res.rows[0] || null;
+  }
+  const res = await query('SELECT id, organizer_id FROM auctions WHERE id = $1 AND organizer_id = $2', [auctionId, user.id]);
+  return res.rows[0] || null;
+};
+
 const createAuction = async (req, res) => {
   try {
     const {
@@ -67,7 +77,6 @@ const getAuctions = async (req, res) => {
     const params = [];
     let where = '';
 
-    // Organizers see their own; admins see all; bidders see auctions they participate in
     if (req.user.role === 'organizer') {
       where = `WHERE a.organizer_id = $${params.length + 1}`;
       params.push(req.user.id);
@@ -75,6 +84,7 @@ const getAuctions = async (req, res) => {
       where = `WHERE a.id IN (SELECT auction_id FROM auction_participants WHERE user_id = $${params.length + 1})`;
       params.push(req.user.id);
     }
+    // super_admin sees all — no where clause
 
     if (status) {
       where += where ? ' AND' : 'WHERE';
@@ -115,7 +125,6 @@ const getAuction = async (req, res) => {
        WHERE a.id = $1`,
       [id]
     );
-
     if (!result.rows.length) return sendError(res, 'Auction not found', 404);
     return sendSuccess(res, result.rows[0]);
   } catch (err) {
@@ -126,14 +135,11 @@ const getAuction = async (req, res) => {
 const updateAuction = async (req, res) => {
   try {
     const { id } = req.params;
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
 
-    const existing = await query(
-      'SELECT * FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [id, req.user.id]
-    );
-
-    if (!existing.rows.length) return sendError(res, 'Auction not found', 404);
-    if (!['draft', 'scheduled'].includes(existing.rows[0].status)) {
+    const current = await query('SELECT status FROM auctions WHERE id = $1', [id]);
+    if (!['draft', 'scheduled'].includes(current.rows[0]?.status)) {
       return sendError(res, 'Cannot edit a live or completed auction', 400);
     }
 
@@ -149,44 +155,32 @@ const updateAuction = async (req, res) => {
 
     const result = await query(
       `UPDATE auctions SET
-        name = COALESCE($1, name),
-        description = COALESCE($2, description),
-        currency = COALESCE($3, currency),
-        timezone = COALESCE($4, timezone),
-        starting_bid = COALESCE($5, starting_bid),
-        bid_increment = COALESCE($6, bid_increment),
+        name = COALESCE($1, name), description = COALESCE($2, description),
+        currency = COALESCE($3, currency), timezone = COALESCE($4, timezone),
+        starting_bid = COALESCE($5, starting_bid), bid_increment = COALESCE($6, bid_increment),
         timer_duration = COALESCE($7, timer_duration),
         anti_sniping_enabled = COALESCE($8, anti_sniping_enabled),
         anti_sniping_trigger_window = COALESCE($9, anti_sniping_trigger_window),
         anti_sniping_extension = COALESCE($10, anti_sniping_extension),
         anti_sniping_max_extensions = COALESCE($11, anti_sniping_max_extensions),
-        allow_pause = COALESCE($12, allow_pause),
-        max_pause_length = COALESCE($13, max_pause_length),
+        allow_pause = COALESCE($12, allow_pause), max_pause_length = COALESCE($13, max_pause_length),
         max_pause_count = COALESCE($14, max_pause_count),
-        enable_round2 = COALESCE($15, enable_round2),
-        enable_round3 = COALESCE($16, enable_round3),
+        enable_round2 = COALESCE($15, enable_round2), enable_round3 = COALESCE($16, enable_round3),
         round2_base_price_type = COALESCE($17, round2_base_price_type),
         round2_base_price_reduction = COALESCE($18, round2_base_price_reduction),
         round3_base_price_type = COALESCE($19, round3_base_price_type),
         round3_base_price_reduction = COALESCE($20, round3_base_price_reduction),
-        bid_cap_enabled = COALESCE($21, bid_cap_enabled),
-        bid_cap_amount = COALESCE($22, bid_cap_amount),
-        tie_break_mode = COALESCE($23, tie_break_mode),
-        max_tie_break_rounds = COALESCE($24, max_tie_break_rounds),
-        auction_order_mode = COALESCE($25, auction_order_mode),
-        scheduled_at = COALESCE($26, scheduled_at),
+        bid_cap_enabled = COALESCE($21, bid_cap_enabled), bid_cap_amount = COALESCE($22, bid_cap_amount),
+        tie_break_mode = COALESCE($23, tie_break_mode), max_tie_break_rounds = COALESCE($24, max_tie_break_rounds),
+        auction_order_mode = COALESCE($25, auction_order_mode), scheduled_at = COALESCE($26, scheduled_at),
         updated_at = NOW()
-      WHERE id = $27
-      RETURNING *`,
+      WHERE id = $27 RETURNING *`,
       [
-        name, description, currency, timezone,
-        startingBid, bidIncrement, timerDuration,
+        name, description, currency, timezone, startingBid, bidIncrement, timerDuration,
         antiSnipingEnabled, antiSnipingTriggerWindow, antiSnipingExtension, antiSnipingMaxExtensions,
-        allowPause, maxPauseLength, maxPauseCount,
-        enableRound2, enableRound3, round2BasePriceType, round2BasePriceReduction,
-        round3BasePriceType, round3BasePriceReduction,
-        bidCapEnabled, bidCapAmount, tieBreakMode, maxTieBreakRounds, auctionOrderMode, scheduledAt,
-        id,
+        allowPause, maxPauseLength, maxPauseCount, enableRound2, enableRound3,
+        round2BasePriceType, round2BasePriceReduction, round3BasePriceType, round3BasePriceReduction,
+        bidCapEnabled, bidCapAmount, tieBreakMode, maxTieBreakRounds, auctionOrderMode, scheduledAt, id,
       ]
     );
 
@@ -199,13 +193,11 @@ const updateAuction = async (req, res) => {
 const startAuction = async (req, res) => {
   try {
     const { id } = req.params;
-    const auction = await query(
-      'SELECT * FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [id, req.user.id]
-    );
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
 
-    if (!auction.rows.length) return sendError(res, 'Auction not found', 404);
-    if (!['draft', 'scheduled'].includes(auction.rows[0].status)) {
+    const current = await query('SELECT status FROM auctions WHERE id = $1', [id]);
+    if (!['draft', 'scheduled'].includes(current.rows[0]?.status)) {
       return sendError(res, 'Auction already started', 400);
     }
 
@@ -214,20 +206,10 @@ const startAuction = async (req, res) => {
       [id]
     );
 
-    await auditService.log({
-      auctionId: id,
-      userId: req.user.id,
-      action: 'auction_started',
-      entityType: 'auction',
-      entityId: id,
-      ipAddress: req.ip,
-    });
+    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_started', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
-    // Notify all connected clients
     const io = req.app.get('io');
-    if (io) {
-      io.to(`auction:${id}`).emit('auction:started', { auctionId: id });
-    }
+    if (io) io.to(`auction:${id}`).emit('auction:started', { auctionId: id });
 
     return sendSuccess(res, {}, 'Auction started');
   } catch (err) {
@@ -238,34 +220,23 @@ const startAuction = async (req, res) => {
 const pauseAuction = async (req, res) => {
   try {
     const { id } = req.params;
-    const auction = await query(
-      'SELECT * FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [id, req.user.id]
-    );
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
 
-    if (!auction.rows.length) return sendError(res, 'Auction not found', 404);
-
-    const a = auction.rows[0];
+    const auctionData = await query('SELECT allow_pause, status FROM auctions WHERE id = $1', [id]);
+    const a = auctionData.rows[0];
     if (!a.allow_pause) return sendError(res, 'Pause not allowed for this auction', 400);
+    if (!a.status.includes('live')) return sendError(res, 'Auction is not live', 400);
 
-    // Find current live item
     const liveItem = await query(
-      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`,
-      [id]
+      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`, [id]
     );
 
     if (liveItem.rows.length) {
       await timerService.pauseTimer(id, liveItem.rows[0].id);
     }
 
-    await auditService.log({
-      auctionId: id,
-      userId: req.user.id,
-      action: 'auction_paused',
-      entityType: 'auction',
-      entityId: id,
-      ipAddress: req.ip,
-    });
+    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_paused', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
     if (io) io.to(`auction:${id}`).emit('auction:paused', { auctionId: id });
@@ -279,30 +250,18 @@ const pauseAuction = async (req, res) => {
 const resumeAuction = async (req, res) => {
   try {
     const { id } = req.params;
-    const auction = await query(
-      'SELECT * FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [id, req.user.id]
-    );
-
-    if (!auction.rows.length) return sendError(res, 'Auction not found', 404);
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
 
     const liveItem = await query(
-      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' AND paused_at IS NOT NULL LIMIT 1`,
-      [id]
+      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' AND paused_at IS NOT NULL LIMIT 1`, [id]
     );
 
     if (liveItem.rows.length) {
       await timerService.resumeTimer(id, liveItem.rows[0].id);
     }
 
-    await auditService.log({
-      auctionId: id,
-      userId: req.user.id,
-      action: 'auction_resumed',
-      entityType: 'auction',
-      entityId: id,
-      ipAddress: req.ip,
-    });
+    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_resumed', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
     if (io) io.to(`auction:${id}`).emit('auction:resumed', { auctionId: id });
@@ -314,33 +273,28 @@ const resumeAuction = async (req, res) => {
 };
 
 /**
- * Introduce next player to auction
+ * Introduce next player — now sends FULL player details in socket event
  */
 const nextPlayer = async (req, res) => {
   try {
     const { id } = req.params;
     const { auctionItemId } = req.body;
 
-    const auction = await query(
-      'SELECT * FROM auctions WHERE id = $1 AND organizer_id = $2',
-      [id, req.user.id]
-    );
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
 
-    if (!auction.rows.length) return sendError(res, 'Auction not found', 404);
-
-    // Check no other item is live
     const currentLive = await query(
-      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live'`,
-      [id]
+      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live'`, [id]
     );
-
     if (currentLive.rows.length) {
       return sendError(res, 'Another player is currently being auctioned', 400);
     }
 
-    // Get the item to start
+    // Fetch full player details for the socket event
     const itemResult = await query(
-      `SELECT ai.*, p.name AS player_name, p.base_price, a.timer_duration, a.starting_bid
+      `SELECT ai.*, p.name AS player_name, p.photo_url, p.base_price, p.category,
+              p.role, p.description, p.statistics,
+              a.timer_duration, a.starting_bid
        FROM auction_items ai
        JOIN players p ON ai.player_id = p.id
        JOIN auctions a ON ai.auction_id = a.id
@@ -351,32 +305,32 @@ const nextPlayer = async (req, res) => {
     if (!itemResult.rows.length) return sendError(res, 'Auction item not found or not pending', 404);
 
     const item = itemResult.rows[0];
-
-    // Set base price
-    const basePrice = item.base_price || item.starting_bid;
+    // First bid must be at least the base price (or starting_bid if base_price not set)
+    const effectiveBasePrice = item.base_price || item.starting_bid;
 
     await query(
       `UPDATE auction_items SET status = 'live', current_price = NULL, started_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [auctionItemId]
     );
+    await query(`UPDATE players SET status = 'live' WHERE id = $1`, [item.player_id]);
 
-    await query(
-      `UPDATE players SET status = 'live' WHERE id = $1`,
-      [item.player_id]
-    );
-
-    // Emit player introduced event
     const io = req.app.get('io');
     if (io) {
       io.to(`auction:${id}`).emit('player:introduced', {
         auctionItemId,
         playerId: item.player_id,
         playerName: item.player_name,
-        basePrice,
+        photoUrl: item.photo_url,
+        category: item.category,
+        role: item.role,
+        description: item.description,
+        statistics: item.statistics || {},
+        basePrice: effectiveBasePrice,
+        roundNumber: item.round_number,
+        sequenceOrder: item.sequence_order,
       });
     }
 
-    // Start timer
     await timerService.startTimer(id, auctionItemId, item.timer_duration);
 
     return sendSuccess(res, { auctionItemId, playerName: item.player_name }, 'Player introduced');
@@ -394,12 +348,12 @@ const getAuctionState = async (req, res) => {
       query(
         `SELECT t.*, u.name AS owner_name FROM teams t
          LEFT JOIN users u ON t.owner_id = u.id
-         WHERE t.auction_id = $1 ORDER BY t.name`,
+         WHERE t.auction_id = $1 ORDER BY t.remaining_budget DESC`,
         [id]
       ),
       query(
-        `SELECT ai.*, p.name AS player_name, p.photo_url, p.category, p.role, p.statistics,
-                t.name AS leader_team_name
+        `SELECT ai.*, p.name AS player_name, p.photo_url, p.category, p.role,
+                p.statistics, p.base_price, t.name AS leader_team_name
          FROM auction_items ai
          JOIN players p ON ai.player_id = p.id
          LEFT JOIN teams t ON ai.current_leader_team_id = t.id
@@ -457,7 +411,7 @@ const addParticipant = async (req, res) => {
       `INSERT INTO auction_participants (auction_id, user_id, team_id, role)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (auction_id, user_id) DO UPDATE SET team_id = $3, role = $4`,
-      [id, userId, teamId, role]
+      [id, userId, teamId || null, role]
     );
 
     return sendSuccess(res, {}, 'Participant added');
@@ -466,16 +420,52 @@ const addParticipant = async (req, res) => {
   }
 };
 
+/**
+ * NEW: End/complete the auction
+ */
+const endAuction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
+
+    const current = await query('SELECT status FROM auctions WHERE id = $1', [id]);
+    const status = current.rows[0]?.status;
+    if (!status || status === 'completed' || status === 'archived') {
+      return sendError(res, 'Auction is already completed', 400);
+    }
+
+    // Stop any running timer
+    const liveItem = await query(
+      `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`, [id]
+    );
+    if (liveItem.rows.length) {
+      timerService.stopTimer(liveItem.rows[0].id);
+      // Mark the live item as unsold since auction is ending
+      await query(
+        `UPDATE auction_items SET status = 'unsold', completed_at = NOW() WHERE id = $1`,
+        [liveItem.rows[0].id]
+      );
+    }
+
+    await query(
+      `UPDATE auctions SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
+    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_ended', entityType: 'auction', entityId: id, ipAddress: req.ip });
+
+    const io = req.app.get('io');
+    if (io) io.to(`auction:${id}`).emit('auction:ended', { auctionId: id });
+
+    return sendSuccess(res, {}, 'Auction ended');
+  } catch (err) {
+    return sendError(res, 'Failed to end auction', 500);
+  }
+};
+
 module.exports = {
-  createAuction,
-  getAuctions,
-  getAuction,
-  updateAuction,
-  startAuction,
-  pauseAuction,
-  resumeAuction,
-  nextPlayer,
-  getAuctionState,
-  getAuctionItems,
-  addParticipant,
+  createAuction, getAuctions, getAuction, updateAuction,
+  startAuction, pauseAuction, resumeAuction, nextPlayer,
+  getAuctionState, getAuctionItems, addParticipant, endAuction,
 };

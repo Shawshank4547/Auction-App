@@ -4,9 +4,18 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
 
 class SocketService {
   private socket: Socket | null = null;
+  private currentAuctionId: string | null = null;
 
   connect(token: string): Socket {
+    // If already connected with a live socket, return it
     if (this.socket?.connected) return this.socket;
+
+    // If socket exists but disconnected, clean it up first
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
 
     this.socket = io(SOCKET_URL, {
       auth: { token },
@@ -19,6 +28,11 @@ class SocketService {
 
     this.socket.on('connect', () => {
       console.log('[Socket] Connected:', this.socket?.id);
+      // Re-join auction room automatically after reconnect
+      if (this.currentAuctionId) {
+        console.log('[Socket] Re-joining auction room:', this.currentAuctionId);
+        this.socket?.emit('auction:rejoin', { auctionId: this.currentAuctionId });
+      }
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -34,9 +48,11 @@ class SocketService {
 
   disconnect() {
     if (this.socket) {
+      this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
     }
+    this.currentAuctionId = null;
   }
 
   getSocket(): Socket | null {
@@ -44,10 +60,14 @@ class SocketService {
   }
 
   joinAuction(auctionId: string) {
+    this.currentAuctionId = auctionId;
     this.socket?.emit('auction:join', { auctionId });
   }
 
   leaveAuction(auctionId: string) {
+    if (this.currentAuctionId === auctionId) {
+      this.currentAuctionId = null;
+    }
     this.socket?.emit('auction:leave', { auctionId });
   }
 

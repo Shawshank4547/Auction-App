@@ -140,20 +140,10 @@ const handlePlayerSold = async (auctionId, auctionItemId) => {
 };
 
 /**
- * Start a countdown timer for an auction item
+ * Internal: create and register an interval for an auction item timer
  */
-const startTimer = async (auctionId, auctionItemId, durationSeconds) => {
-  // Clear any existing timer
-  stopTimer(auctionItemId);
-
-  let timeRemaining = durationSeconds;
-
-  // Update DB
-  await query(
-    `UPDATE auction_items SET timer_start = NOW(), timer_duration = $1, status = 'live', started_at = COALESCE(started_at, NOW())
-     WHERE id = $2`,
-    [durationSeconds, auctionItemId]
-  );
+const _createInterval = (auctionId, auctionItemId, initialTime, extensionsUsed) => {
+  let timeRemaining = initialTime;
 
   const intervalId = setInterval(async () => {
     timeRemaining--;
@@ -169,10 +159,30 @@ const startTimer = async (auctionId, auctionItemId, durationSeconds) => {
     intervalId,
     timeRemaining,
     auctionId,
-    extensionsUsed: 0,
+    extensionsUsed: extensionsUsed || 0,
   });
 
-  broadcastTimer(auctionId, auctionItemId, timeRemaining, 'started');
+  return intervalId;
+};
+
+/**
+ * Start a countdown timer for an auction item
+ */
+const startTimer = async (auctionId, auctionItemId, durationSeconds) => {
+  // Clear any existing timer
+  stopTimer(auctionItemId);
+
+  // Update DB
+  await query(
+    `UPDATE auction_items SET timer_start = NOW(), timer_duration = $1, status = 'live', started_at = COALESCE(started_at, NOW())
+     WHERE id = $2`,
+    [durationSeconds, auctionItemId]
+  );
+
+  _createInterval(auctionId, auctionItemId, durationSeconds, 0);
+
+  // Broadcast immediately so clients see the correct starting time before first tick
+  broadcastTimer(auctionId, auctionItemId, durationSeconds, 'started');
 };
 
 /**
@@ -212,26 +222,33 @@ const extendTimer = async (auctionId, auctionItemId, extensionSeconds, maxExtens
 };
 
 /**
- * Pause timer
+ * Pause timer — snapshot current timeRemaining to DB BEFORE stopping interval
  */
 const pauseTimer = async (auctionId, auctionItemId) => {
   const timer = activeTimers.get(auctionItemId);
   if (!timer) return null;
 
-  stopTimer(auctionItemId);
+  // Capture remaining time BEFORE stopping
+  const remaining = timer.timeRemaining;
+  const extensionsUsed = timer.extensionsUsed;
 
+  // Stop the interval
+  clearInterval(timer.intervalId);
+  activeTimers.delete(auctionItemId);
+
+  // Persist to DB so resume can restore it
   await query(
     `UPDATE auction_items SET paused_at = NOW(), paused_time_remaining = $1
      WHERE id = $2`,
-    [timer.timeRemaining, auctionItemId]
+    [remaining, auctionItemId]
   );
 
-  broadcastTimer(auctionId, auctionItemId, timer.timeRemaining, 'paused');
-  return timer.timeRemaining;
+  broadcastTimer(auctionId, auctionItemId, remaining, 'paused');
+  return remaining;
 };
 
 /**
- * Resume timer from paused state
+ * Resume timer from paused state — restores exact remaining time and extensions
  */
 const resumeTimer = async (auctionId, auctionItemId) => {
   const itemResult = await query(
@@ -243,29 +260,17 @@ const resumeTimer = async (auctionId, auctionItemId) => {
   const { paused_time_remaining, extensions_used } = itemResult.rows[0];
   if (paused_time_remaining == null) return;
 
+  // Clear pause flags in DB
   await query(
     `UPDATE auction_items SET paused_at = NULL, paused_time_remaining = NULL WHERE id = $1`,
     [auctionItemId]
   );
 
-  let timeRemaining = paused_time_remaining;
-  const intervalId = setInterval(async () => {
-    timeRemaining--;
-    broadcastTimer(auctionId, auctionItemId, timeRemaining);
-    if (timeRemaining <= 0) {
-      stopTimer(auctionItemId);
-      await handlePlayerSold(auctionId, auctionItemId);
-    }
-  }, 1000);
+  // Recreate interval with saved state
+  _createInterval(auctionId, auctionItemId, paused_time_remaining, extensions_used || 0);
 
-  activeTimers.set(auctionItemId, {
-    intervalId,
-    timeRemaining,
-    auctionId,
-    extensionsUsed: extensions_used || 0,
-  });
-
-  broadcastTimer(auctionId, auctionItemId, timeRemaining, 'resumed');
+  // Broadcast immediately so clients see correct time
+  broadcastTimer(auctionId, auctionItemId, paused_time_remaining, 'resumed');
 };
 
 /**

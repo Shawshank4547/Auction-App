@@ -9,7 +9,6 @@ interface AuthStore {
   accessToken: string | null;
   refreshToken: string | null;
   isLoading: boolean;
-  // Pending OTP state (userId + email stored between Google/register and OTP verify)
   pendingOtp: { userId: string; email: string; name: string } | null;
 
   login: (email: string, password: string) => Promise<void>;
@@ -41,6 +40,7 @@ const useAuthStore = create<AuthStore>()(
           set({ user, accessToken, refreshToken, isLoading: false });
           socketService.connect(accessToken);
         } catch (err) {
+          // Always reset loading — even on network timeout or 5xx
           set({ isLoading: false });
           throw err;
         }
@@ -108,7 +108,7 @@ const useAuthStore = create<AuthStore>()(
           api.post('/auth/logout').catch(() => {});
         }
         socketService.disconnect();
-        set({ user: null, accessToken: null, refreshToken: null, pendingOtp: null });
+        set({ user: null, accessToken: null, refreshToken: null, pendingOtp: null, isLoading: false });
       },
 
       setTokens: (accessToken, refreshToken) => {

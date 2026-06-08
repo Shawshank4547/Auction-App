@@ -18,6 +18,7 @@ router.patch('/:id', authenticate, authorize('organizer', 'super_admin'), auctio
 router.post('/:id/start', authenticate, authorize('organizer', 'super_admin'), auctionController.startAuction);
 router.post('/:id/pause', authenticate, authorize('organizer', 'super_admin'), auctionController.pauseAuction);
 router.post('/:id/resume', authenticate, authorize('organizer', 'super_admin'), auctionController.resumeAuction);
+router.post('/:id/end', authenticate, authorize('organizer', 'super_admin'), auctionController.endAuction);  // NEW
 router.post('/:id/next-player',
   authenticate, authorize('organizer', 'super_admin'),
   [body('auctionItemId').notEmpty()], validate,

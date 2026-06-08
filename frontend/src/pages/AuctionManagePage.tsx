@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Upload, Users, List, Settings } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Edit2, Users, List, Settings } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
@@ -28,11 +28,13 @@ const AuctionManagePage: React.FC = () => {
 
   // Team form
   const [showTeamModal, setShowTeamModal] = useState(false);
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null);
   const [teamForm, setTeamForm] = useState({ name: '', totalBudget: '', ownerId: '', maxPlayers: '25' });
   const [teamLoading, setTeamLoading] = useState(false);
 
   // Player form
   const [showPlayerModal, setShowPlayerModal] = useState(false);
+  const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
   const [playerForm, setPlayerForm] = useState({ name: '', category: '', role: '', basePrice: '', description: '' });
   const [playerLoading, setPlayerLoading] = useState(false);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -50,57 +52,126 @@ const AuctionManagePage: React.FC = () => {
     }).catch(() => toast.error('Failed to load')).finally(() => setLoading(false));
   }, [id]);
 
-  const handleCreateTeam = async (e: React.FormEvent) => {
+  const openAddTeam = () => {
+    setEditingTeam(null);
+    setTeamForm({ name: '', totalBudget: '', ownerId: '', maxPlayers: '25' });
+    setShowTeamModal(true);
+  };
+
+  const openEditTeam = (team: Team) => {
+    setEditingTeam(team);
+    setTeamForm({
+      name: team.name,
+      totalBudget: String(team.total_budget),
+      ownerId: team.owner_id || '',
+      maxPlayers: String(team.max_players),
+    });
+    setShowTeamModal(true);
+  };
+
+  const handleSaveTeam = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id) return;
     setTeamLoading(true);
     try {
-      const res = await api.post(`/auctions/${id}/teams`, {
-        name: teamForm.name,
-        totalBudget: parseInt(teamForm.totalBudget),
-        ownerId: teamForm.ownerId || undefined,
-        maxPlayers: parseInt(teamForm.maxPlayers) || 25,
-      });
-      setTeams((prev) => [...prev, res.data.data]);
+      if (editingTeam) {
+        const res = await api.patch(`/auctions/${id}/teams/${editingTeam.id}`, {
+          name: teamForm.name,
+          ownerId: teamForm.ownerId || undefined,
+          maxPlayers: parseInt(teamForm.maxPlayers) || 25,
+        });
+        setTeams((prev) => prev.map((t) => t.id === editingTeam.id ? res.data.data : t));
+        toast.success('Team updated');
+      } else {
+        const res = await api.post(`/auctions/${id}/teams`, {
+          name: teamForm.name,
+          totalBudget: parseInt(teamForm.totalBudget),
+          ownerId: teamForm.ownerId || undefined,
+          maxPlayers: parseInt(teamForm.maxPlayers) || 25,
+        });
+        setTeams((prev) => [...prev, res.data.data]);
+        toast.success('Team created');
+      }
       setShowTeamModal(false);
-      setTeamForm({ name: '', totalBudget: '', ownerId: '', maxPlayers: '25' });
-      toast.success('Team created');
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Failed to create team');
+      toast.error(err.response?.data?.message || 'Failed to save team');
     } finally {
       setTeamLoading(false);
     }
   };
 
   const handleDeleteTeam = async (teamId: string) => {
-    if (!id || !window.confirm('Delete this team?')) return;
+    if (!id || !window.confirm('Delete this team? This cannot be undone.')) return;
     try {
       await api.delete(`/auctions/${id}/teams/${teamId}`);
       setTeams((prev) => prev.filter((t) => t.id !== teamId));
       toast.success('Team deleted');
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Cannot delete');
+      toast.error(err.response?.data?.message || 'Cannot delete — auction may already be live');
     }
   };
 
-  const handleCreatePlayer = async (e: React.FormEvent) => {
+  const openAddPlayer = () => {
+    setEditingPlayer(null);
+    setPlayerForm({ name: '', category: '', role: '', basePrice: '', description: '' });
+    setPhotoFile(null);
+    setShowPlayerModal(true);
+  };
+
+  const openEditPlayer = (player: Player) => {
+    setEditingPlayer(player);
+    setPlayerForm({
+      name: player.name,
+      category: player.category || '',
+      role: player.role || '',
+      basePrice: String(player.base_price || ''),
+      description: (player as any).description || '',
+    });
+    setPhotoFile(null);
+    setShowPlayerModal(true);
+  };
+
+  const handleSavePlayer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id) return;
+
+    if (!playerForm.name.trim()) {
+      toast.error('Player name is required');
+      return;
+    }
+    const basePriceVal = parseInt(playerForm.basePrice);
+    if (isNaN(basePriceVal) || basePriceVal < 0) {
+      toast.error('Please enter a valid base price');
+      return;
+    }
+
     setPlayerLoading(true);
     try {
       const fd = new FormData();
-      Object.entries(playerForm).forEach(([k, v]) => v && fd.append(k, v));
+      fd.append('name', playerForm.name.trim());
+      fd.append('basePrice', String(basePriceVal));
+      if (playerForm.category) fd.append('category', playerForm.category);
+      if (playerForm.role) fd.append('role', playerForm.role);
+      if (playerForm.description) fd.append('description', playerForm.description);
       if (photoFile) fd.append('photo', photoFile);
-      const res = await api.post(`/auctions/${id}/players`, fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      setPlayers((prev) => [...prev, res.data.data]);
+
+      if (editingPlayer) {
+        const res = await api.patch(`/auctions/${id}/players/${editingPlayer.id}`, fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        setPlayers((prev) => prev.map((p) => p.id === editingPlayer.id ? res.data.data : p));
+        toast.success('Player updated');
+      } else {
+        const res = await api.post(`/auctions/${id}/players`, fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        setPlayers((prev) => [...prev, res.data.data]);
+        toast.success('Player created');
+      }
       setShowPlayerModal(false);
-      setPlayerForm({ name: '', category: '', role: '', basePrice: '', description: '' });
-      setPhotoFile(null);
-      toast.success('Player created');
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Failed to create player');
+      const msg = err.response?.data?.message || 'Failed to save player';
+      toast.error(msg);
     } finally {
       setPlayerLoading(false);
     }
@@ -134,6 +205,8 @@ const AuctionManagePage: React.FC = () => {
   if (loading) return <Spinner className="py-20" />;
   if (!auction) return <div className="text-center py-20 text-gray-400">Auction not found</div>;
 
+  const canEditAuction = auction.status === 'draft' || auction.status === 'scheduled';
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
@@ -166,10 +239,15 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Teams ({teams.length})</h2>
-            <Button size="sm" onClick={() => setShowTeamModal(true)}>
+            <Button size="sm" onClick={openAddTeam}>
               <Plus size={14} className="mr-1" /> Add Team
             </Button>
           </div>
+          {teams.length === 0 && (
+            <div className="text-center py-8 text-gray-500 text-sm bg-gray-900 rounded-xl border border-gray-800">
+              No teams yet. Add your first team above.
+            </div>
+          )}
           {teams.map((t) => (
             <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-4">
               <div className="flex-1">
@@ -181,11 +259,21 @@ const AuctionManagePage: React.FC = () => {
                 <p className="text-xs text-gray-500">of {shortCurrency(t.total_budget)}</p>
               </div>
               <button
-                onClick={() => handleDeleteTeam(t.id)}
-                className="p-2 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+                onClick={() => openEditTeam(t)}
+                className="p-2 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                title="Edit team"
               >
-                <Trash2 size={16} />
+                <Edit2 size={15} />
               </button>
+              {canEditAuction && (
+                <button
+                  onClick={() => handleDeleteTeam(t.id)}
+                  className="p-2 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+                  title="Delete team"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -196,10 +284,15 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Players ({players.length})</h2>
-            <Button size="sm" onClick={() => setShowPlayerModal(true)}>
+            <Button size="sm" onClick={openAddPlayer}>
               <Plus size={14} className="mr-1" /> Add Player
             </Button>
           </div>
+          {players.length === 0 && (
+            <div className="text-center py-8 text-gray-500 text-sm bg-gray-900 rounded-xl border border-gray-800">
+              No players yet. Add your first player above.
+            </div>
+          )}
           <div className="space-y-2">
             {players.map((p) => (
               <div key={p.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3 flex items-center gap-3">
@@ -212,7 +305,7 @@ const AuctionManagePage: React.FC = () => {
                 )}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-white">{p.name}</p>
-                  <p className="text-xs text-gray-500">{p.category} · {p.role} · Base: {p.base_price ? shortCurrency(p.base_price) : '—'}</p>
+                  <p className="text-xs text-gray-500">{p.category || '—'} · {p.role || '—'} · Base: {p.base_price ? shortCurrency(p.base_price) : '—'}</p>
                 </div>
                 <Badge variant={p.status === 'sold' ? 'success' : p.status === 'available' ? 'info' : 'default'} size="sm">
                   {p.status}
@@ -220,10 +313,21 @@ const AuctionManagePage: React.FC = () => {
                 {p.status === 'draft' && (
                   <Button size="sm" variant="ghost" onClick={() => handleSchedulePlayer(p.id)}>Schedule</Button>
                 )}
+                {/* Edit allowed for draft/available/unsold players */}
+                {['draft', 'available', 'unsold'].includes(p.status) && (
+                  <button
+                    onClick={() => openEditPlayer(p)}
+                    className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                    title="Edit player"
+                  >
+                    <Edit2 size={14} />
+                  </button>
+                )}
                 {(p.status === 'draft' || p.status === 'available') && (
                   <button
                     onClick={() => handleDeletePlayer(p.id)}
                     className="p-1.5 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+                    title="Delete player"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -238,17 +342,23 @@ const AuctionManagePage: React.FC = () => {
       {tab === 'settings' && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-3">
           <h2 className="font-semibold text-white">Auction Configuration</h2>
-          <p className="text-gray-400 text-sm">Edit via the auction settings form. (Coming soon in v2)</p>
+          {!canEditAuction && (
+            <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
+              This auction is live or completed. Settings are read-only.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3 mt-4">
             {[
               ['Bid Increment', formatCurrency(auction.bid_increment, auction.currency)],
               ['Timer', `${auction.timer_duration}s`],
-              ['Anti-sniping', auction.anti_sniping_enabled ? 'On' : 'Off'],
-              ['Bid Cap', auction.bid_cap_enabled ? 'On' : 'Off'],
+              ['Anti-sniping', auction.anti_sniping_enabled ? `${auction.anti_sniping_trigger_window}s window, +${auction.anti_sniping_extension}s` : 'Off'],
+              ['Max Extensions', String(auction.anti_sniping_max_extensions || 'Unlimited')],
+              ['Bid Cap', auction.bid_cap_enabled && auction.bid_cap_amount ? formatCurrency(auction.bid_cap_amount, auction.currency) : 'Off'],
               ['Round 2', auction.enable_round2 ? 'On' : 'Off'],
               ['Round 3', auction.enable_round3 ? 'On' : 'Off'],
               ['Tie-break', auction.tie_break_mode.replace(/_/g, ' ')],
               ['Order', auction.auction_order_mode],
+              ['Allow Pause', auction.allow_pause ? 'Yes' : 'No'],
             ].map(([k, v]) => (
               <div key={k} className="bg-gray-800 rounded-lg p-3">
                 <p className="text-xs text-gray-400">{k}</p>
@@ -259,42 +369,62 @@ const AuctionManagePage: React.FC = () => {
         </div>
       )}
 
-      {/* Add Team Modal */}
-      <Modal isOpen={showTeamModal} onClose={() => setShowTeamModal(false)} title="Add Team">
-        <form onSubmit={handleCreateTeam} className="space-y-4">
+      {/* Add / Edit Team Modal */}
+      <Modal isOpen={showTeamModal} onClose={() => setShowTeamModal(false)} title={editingTeam ? 'Edit Team' : 'Add Team'}>
+        <form onSubmit={handleSaveTeam} className="space-y-4">
           <Input label="Team Name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required />
-          <Input label="Total Budget" type="number" value={teamForm.totalBudget} onChange={(e) => setTeamForm({ ...teamForm, totalBudget: e.target.value })} placeholder="e.g. 10000000" required />
+          {!editingTeam && (
+            <Input label="Total Budget" type="number" value={teamForm.totalBudget} onChange={(e) => setTeamForm({ ...teamForm, totalBudget: e.target.value })} placeholder="e.g. 10000000" required />
+          )}
+          {editingTeam && (
+            <p className="text-xs text-gray-500 bg-gray-800 rounded-lg px-3 py-2">
+              Budget cannot be changed after team creation (current: {shortCurrency(editingTeam.total_budget)}).
+            </p>
+          )}
           <Input label="Max Players" type="number" value={teamForm.maxPlayers} onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })} />
           <Input label="Owner User ID (optional)" value={teamForm.ownerId} onChange={(e) => setTeamForm({ ...teamForm, ownerId: e.target.value })} placeholder="UUID of the bidder" />
           <div className="flex gap-2 pt-2">
             <Button type="button" variant="ghost" fullWidth onClick={() => setShowTeamModal(false)}>Cancel</Button>
-            <Button type="submit" fullWidth loading={teamLoading}>Create Team</Button>
+            <Button type="submit" fullWidth loading={teamLoading}>{editingTeam ? 'Save Changes' : 'Create Team'}</Button>
           </div>
         </form>
       </Modal>
 
-      {/* Add Player Modal */}
-      <Modal isOpen={showPlayerModal} onClose={() => setShowPlayerModal(false)} title="Add Player">
-        <form onSubmit={handleCreatePlayer} className="space-y-3">
-          <Input label="Player Name" value={playerForm.name} onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })} required />
+      {/* Add / Edit Player Modal */}
+      <Modal isOpen={showPlayerModal} onClose={() => setShowPlayerModal(false)} title={editingPlayer ? 'Edit Player' : 'Add Player'}>
+        <form onSubmit={handleSavePlayer} className="space-y-3">
+          <Input label="Player Name *" value={playerForm.name} onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })} required />
           <div className="grid grid-cols-2 gap-3">
             <Input label="Category" value={playerForm.category} onChange={(e) => setPlayerForm({ ...playerForm, category: e.target.value })} placeholder="Batsman, Bowler…" />
             <Input label="Role" value={playerForm.role} onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })} placeholder="Opening, Pace…" />
           </div>
-          <Input label="Base Price" type="number" value={playerForm.basePrice} onChange={(e) => setPlayerForm({ ...playerForm, basePrice: e.target.value })} placeholder="e.g. 500000" required />
+          <Input
+            label="Base Price *"
+            type="number"
+            value={playerForm.basePrice}
+            onChange={(e) => setPlayerForm({ ...playerForm, basePrice: e.target.value })}
+            placeholder="e.g. 500000"
+            required
+            min="0"
+          />
           <Input label="Description" value={playerForm.description} onChange={(e) => setPlayerForm({ ...playerForm, description: e.target.value })} />
           <div>
-            <label className="text-sm font-medium text-gray-300 block mb-1">Photo</label>
+            <label className="text-sm font-medium text-gray-300 block mb-1">
+              Photo {editingPlayer?.photo_url ? '(leave blank to keep existing)' : ''}
+            </label>
             <input
               type="file"
               accept="image/*"
               onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
               className="w-full text-sm text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700"
             />
+            {editingPlayer?.photo_url && !photoFile && (
+              <p className="text-xs text-gray-500 mt-1">Current photo will be kept.</p>
+            )}
           </div>
           <div className="flex gap-2 pt-2">
             <Button type="button" variant="ghost" fullWidth onClick={() => setShowPlayerModal(false)}>Cancel</Button>
-            <Button type="submit" fullWidth loading={playerLoading}>Create Player</Button>
+            <Button type="submit" fullWidth loading={playerLoading}>{editingPlayer ? 'Save Changes' : 'Create Player'}</Button>
           </div>
         </form>
       </Modal>

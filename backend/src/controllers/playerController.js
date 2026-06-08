@@ -8,15 +8,28 @@ const createPlayer = async (req, res) => {
     const { auctionId } = req.params;
     const { name, category, role, basePrice, description, statistics } = req.body;
 
+    // Validate basePrice
+    const basePriceInt = parseInt(basePrice);
+    if (isNaN(basePriceInt) || basePriceInt < 0) {
+      return sendError(res, 'Base price must be a valid non-negative number', 400);
+    }
+
     const auctionCheck = await query(
       'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
       [auctionId, req.user.id]
     );
     if (!auctionCheck.rows.length) return sendError(res, 'Auction not found', 404);
 
+    // Upload photo — null if R2 not configured or no file
     let photoUrl = null;
     if (req.file) {
-      photoUrl = await uploadFile(req.file.buffer, req.file.mimetype, 'players');
+      try {
+        photoUrl = await uploadFile(req.file.buffer, req.file.mimetype, 'players');
+      } catch (uploadErr) {
+        console.error('[createPlayer] Photo upload failed:', uploadErr.message);
+        // Continue without photo rather than failing the whole request
+        photoUrl = null;
+      }
     }
 
     const sortRes = await query(
@@ -29,8 +42,8 @@ const createPlayer = async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
-        auctionId, name, photoUrl, category, role,
-        parseInt(basePrice), description,
+        auctionId, name, photoUrl, category || null, role || null,
+        basePriceInt, description || null,
         statistics ? JSON.stringify(statistics) : '{}',
         sortRes.rows[0].next,
       ]
@@ -46,6 +59,7 @@ const createPlayer = async (req, res) => {
 
     return sendSuccess(res, result.rows[0], 'Player created', 201);
   } catch (err) {
+    console.error('[createPlayer] error:', err);
     return sendError(res, 'Failed to create player', 500);
   }
 };
@@ -69,7 +83,7 @@ const getPlayers = async (req, res) => {
     }
 
     const result = await query(
-      `SELECT p.*, ps.team_id AS sold_to_team_id, t.name AS sold_to_team
+      `SELECT p.*, ps.team_id AS sold_to_team_id, t.name AS sold_to_team, ps.final_price
        FROM players p
        LEFT JOIN player_sales ps ON ps.player_id = p.id
        LEFT JOIN teams t ON ps.team_id = t.id
@@ -124,12 +138,22 @@ const updatePlayer = async (req, res) => {
     );
     if (!existing.rows.length) return sendError(res, 'Player not found', 404);
 
+    // Cannot edit a player that is currently live
+    if (existing.rows[0].status === 'live') {
+      return sendError(res, 'Cannot edit a player currently being auctioned', 400);
+    }
+
     const { name, category, role, basePrice, description, statistics, status } = req.body;
     let photoUrl = existing.rows[0].photo_url;
 
     if (req.file) {
-      if (photoUrl) await deleteFile(photoUrl).catch(() => {});
-      photoUrl = await uploadFile(req.file.buffer, req.file.mimetype, 'players');
+      try {
+        if (photoUrl) await deleteFile(photoUrl).catch(() => {});
+        photoUrl = await uploadFile(req.file.buffer, req.file.mimetype, 'players');
+      } catch (uploadErr) {
+        console.error('[updatePlayer] Photo upload failed:', uploadErr.message);
+        // Keep existing photo
+      }
     }
 
     const result = await query(
@@ -164,14 +188,12 @@ const deletePlayer = async (req, res) => {
   try {
     const { auctionId, playerId } = req.params;
 
-    // Verify organizer owns this auction
     const auctionCheck = await query(
       'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
       [auctionId, req.user.id]
     );
     if (!auctionCheck.rows.length) return sendError(res, 'Auction not found', 404);
 
-    // Only allow deleting players that haven't been sold / are not currently live
     const player = await query(
       "SELECT * FROM players WHERE id = $1 AND auction_id = $2 AND status IN ('draft', 'available', 'unsold')",
       [playerId, auctionId]
@@ -180,16 +202,13 @@ const deletePlayer = async (req, res) => {
       return sendError(res, 'Player not found or cannot be deleted (sold or currently live)', 404);
     }
 
-    // Delete auction_items rows referencing this player first (FK constraint)
     await query(
       "DELETE FROM auction_items WHERE player_id = $1 AND auction_id = $2 AND status IN ('pending', 'unsold', 'skipped')",
       [playerId, auctionId]
     );
 
-    // Delete the player
     await query('DELETE FROM players WHERE id = $1', [playerId]);
 
-    // Clean up photo from storage
     if (player.rows[0].photo_url) {
       await deleteFile(player.rows[0].photo_url).catch(() => {});
     }
@@ -220,11 +239,12 @@ const bulkCreatePlayers = async (req, res) => {
     const created = [];
     for (const p of players) {
       sortOrder++;
+      const basePriceInt = parseInt(p.basePrice) || 0;
       const result = await query(
         `INSERT INTO players (auction_id, name, category, role, base_price, description, statistics, sort_order)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [auctionId, p.name, p.category, p.role, parseInt(p.basePrice), p.description, JSON.stringify(p.statistics || {}), sortOrder]
+        [auctionId, p.name, p.category || null, p.role || null, basePriceInt, p.description || null, JSON.stringify(p.statistics || {}), sortOrder]
       );
       created.push(result.rows[0]);
     }

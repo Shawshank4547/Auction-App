@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Auction, AuctionItem, Team, ChatMessage, TieBreakRound } from '../types';
+import { Auction, AuctionItem, Team, ChatMessage } from '../types';
 
 interface TieBreakState {
   tieBreakRoundId: string;
@@ -11,24 +11,17 @@ interface TieBreakState {
 }
 
 interface AuctionStore {
-  // Current auction data
   currentAuction: Auction | null;
   teams: Team[];
   liveItem: AuctionItem | null;
   timeRemaining: number | null;
   auctionItems: AuctionItem[];
-
-  // Real-time feed
   recentBids: Array<{ teamId: string; teamName: string; amount: number; timestamp: string }>;
   chatMessages: ChatMessage[];
-
-  // Tie-break
   activeTieBreak: TieBreakState | null;
-
-  // UI state
   isPaused: boolean;
+  auctionEnded: boolean;
 
-  // Actions
   setCurrentAuction: (auction: Auction) => void;
   setTeams: (teams: Team[]) => void;
   setLiveItem: (item: AuctionItem | null) => void;
@@ -39,8 +32,16 @@ interface AuctionStore {
   addBidFeed: (entry: { teamId: string; teamName: string; amount: number }) => void;
   setActiveTieBreak: (tb: TieBreakState | null) => void;
   setIsPaused: (v: boolean) => void;
-  updateTeamBudget: (teamId: string, remaining: number) => void;
+  /**
+   * Called when player:sold fires.
+   * Subtracts finalPrice from the winning team's remaining_budget in the store.
+   */
+  updateTeamBudget: (teamId: string, finalPrice: number) => void;
   updateLiveItemPrice: (price: number, teamId: string, teamName: string, timeRemaining?: number) => void;
+  /**
+   * Marks an auction item as sold/unsold in the local queue so the counter updates.
+   */
+  markAuctionItemSold: (auctionItemId: string) => void;
   reset: () => void;
 }
 
@@ -54,6 +55,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
   chatMessages: [],
   activeTieBreak: null,
   isPaused: false,
+  auctionEnded: false,
 
   setCurrentAuction: (auction) => set({ currentAuction: auction }),
   setTeams: (teams) => set({ teams }),
@@ -79,10 +81,13 @@ const useAuctionStore = create<AuctionStore>((set) => ({
   setActiveTieBreak: (activeTieBreak) => set({ activeTieBreak }),
   setIsPaused: (isPaused) => set({ isPaused }),
 
-  updateTeamBudget: (teamId, remaining) =>
+  // Subtract the final sale price from the winning team's remaining budget
+  updateTeamBudget: (teamId, finalPrice) =>
     set((state) => ({
       teams: state.teams.map((t) =>
-        t.id === teamId ? { ...t, remaining_budget: remaining } : t
+        t.id === teamId
+          ? { ...t, remaining_budget: t.remaining_budget - finalPrice, squad_size: t.squad_size + 1 }
+          : t
       ),
     })),
 
@@ -92,6 +97,12 @@ const useAuctionStore = create<AuctionStore>((set) => ({
         ? { ...state.liveItem, current_price: price, current_leader_team_id: teamId, leader_team_name: teamName }
         : null,
       timeRemaining: timeRemaining !== undefined ? timeRemaining : state.timeRemaining,
+    })),
+
+  // Remove the sold/unsold item from the pending queue so the count updates live
+  markAuctionItemSold: (auctionItemId) =>
+    set((state) => ({
+      auctionItems: state.auctionItems.filter((i) => i.id !== auctionItemId),
     })),
 
   reset: () =>
@@ -105,6 +116,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
       chatMessages: [],
       activeTieBreak: null,
       isPaused: false,
+      auctionEnded: false,
     }),
 }));
 

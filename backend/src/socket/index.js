@@ -28,27 +28,51 @@ const setupSocket = (io) => {
 
   io.on('connection', (socket) => {
     logger.info(`Socket connected: ${socket.id} user=${socket.user.id}`);
+    // Always join a personal room for direct messages (bid:rejected etc.)
     socket.join(socket.user.id);
 
-    socket.on('auction:join', async ({ auctionId }) => {
+    // Helper to join an auction room — used on initial join AND on reconnect
+    const joinAuctionRoom = async (auctionId) => {
       try {
-        const access = await query(
-          `SELECT ap.team_id FROM auction_participants ap
-           WHERE ap.auction_id = $1 AND ap.user_id = $2
-           UNION
-           SELECT NULL AS team_id FROM auctions WHERE id = $1 AND organizer_id = $2`,
+        // super_admin and organizer can always join
+        if (socket.user.role === 'super_admin') {
+          socket.join(`auction:${auctionId}`);
+          socket.auctionId = auctionId;
+          const history = (chatStore.get(auctionId) || []).slice(-50);
+          socket.emit('chat:history', history);
+          return true;
+        }
+
+        // Check if organizer of this auction
+        const organizerCheck = await query(
+          'SELECT id FROM auctions WHERE id = $1 AND organizer_id = $2',
+          [auctionId, socket.user.id]
+        );
+        if (organizerCheck.rows.length) {
+          socket.join(`auction:${auctionId}`);
+          socket.auctionId = auctionId;
+          const history = (chatStore.get(auctionId) || []).slice(-50);
+          socket.emit('chat:history', history);
+          return true;
+        }
+
+        // Check auction_participants (bidders AND viewers)
+        const participantCheck = await query(
+          `SELECT ap.team_id, ap.role FROM auction_participants ap
+           WHERE ap.auction_id = $1 AND ap.user_id = $2`,
           [auctionId, socket.user.id]
         );
 
-        if (!access.rows.length) {
+        if (!participantCheck.rows.length) {
           socket.emit('error', { message: 'Not authorized to join this auction' });
-          return;
+          return false;
         }
 
         socket.join(`auction:${auctionId}`);
         socket.auctionId = auctionId;
 
-        const teamRow = access.rows.find((r) => r.team_id);
+        // Join team room if assigned
+        const teamRow = participantCheck.rows.find((r) => r.team_id);
         if (teamRow?.team_id) {
           socket.join(`team:${teamRow.team_id}`);
           socket.teamId = teamRow.team_id;
@@ -56,23 +80,36 @@ const setupSocket = (io) => {
 
         const history = (chatStore.get(auctionId) || []).slice(-50);
         socket.emit('chat:history', history);
+        return true;
+      } catch (err) {
+        logger.error('joinAuctionRoom error', err);
+        socket.emit('error', { message: 'Failed to join auction' });
+        return false;
+      }
+    };
 
+    socket.on('auction:join', async ({ auctionId }) => {
+      const joined = await joinAuctionRoom(auctionId);
+      if (joined) {
         socket.to(`auction:${auctionId}`).emit('user:joined', {
           userId: socket.user.id,
           name: socket.user.name,
         });
-      } catch (err) {
-        logger.error('auction:join error', err);
-        socket.emit('error', { message: 'Failed to join auction' });
       }
     });
 
     socket.on('auction:leave', ({ auctionId }) => {
       socket.leave(`auction:${auctionId}`);
+      socket.auctionId = null;
       socket.to(`auction:${auctionId}`).emit('user:left', {
         userId: socket.user.id,
         name: socket.user.name,
       });
+    });
+
+    // Client requests re-join after reconnect (frontend sends this on socket reconnect event)
+    socket.on('auction:rejoin', async ({ auctionId }) => {
+      await joinAuctionRoom(auctionId);
     });
 
     socket.on('chat:send', ({ auctionId, message }) => {
