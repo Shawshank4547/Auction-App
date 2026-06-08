@@ -1,8 +1,19 @@
+/**
+ * storage.js — image storage utility
+ *
+ * Priority:
+ *  1. Cloudflare R2 (when env vars are set) — returns public CDN URL
+ *  2. DB base64 (fallback) — converts buffer to a data: URI so no files
+ *     are ever written to disk and no static file server is needed.
+ *
+ * The "only save image to db" requirement means: when R2 is not configured,
+ * store the image as a base64 data URI directly in the photo_url column
+ * rather than writing to the uploads/ folder.
+ */
+
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
 
 const R2_CONFIGURED =
   process.env.R2_ACCOUNT_ID &&
@@ -26,91 +37,62 @@ if (R2_CONFIGURED) {
 const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'auction-platform';
 const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
 
-// Local uploads directory for dev mode
-const LOCAL_UPLOADS_DIR = path.join(process.cwd(), 'uploads');
-const LOCAL_PUBLIC_PATH = '/uploads'; // served by express static
-
-// FIX: Backend base URL so images resolve cross-origin when R2 not configured.
-// Set BACKEND_URL in .env e.g. http://localhost:3001 or https://api.yoursite.com
-const BACKEND_URL = (process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`).replace(/\/$/, '');
+// Max size for base64 DB storage: 2 MB (keeps rows manageable)
+const MAX_BASE64_BYTES = 2 * 1024 * 1024;
 
 /**
- * Ensure local uploads dir exists
- */
-const ensureLocalDir = (folder) => {
-  const dir = path.join(LOCAL_UPLOADS_DIR, folder);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-};
-
-/**
- * Upload a file buffer to R2 (or local disk in dev).
- * Always returns an ABSOLUTE URL so images work from any frontend origin.
+ * Upload a file buffer to R2 (production) or encode as base64 data URI (dev).
+ * Always returns a URL string — either an R2 CDN URL or a data: URI.
+ * Nothing is ever written to the local filesystem.
  */
 const uploadFile = async (buffer, mimetype, folder = 'uploads') => {
-  // Local fallback when R2 is not configured
-  if (!R2_CONFIGURED || !s3Client) {
-    try {
-      // Normalise extension — e.g. "image/jpeg" → "jpg", "image/heic" → "heic"
-      const rawExt = mimetype.split('/')[1] || 'jpg';
-      const extension = rawExt.replace('jpeg', 'jpg');
-      const filename = `${uuidv4()}.${extension}`;
-      const dir = ensureLocalDir(folder);
-      const filepath = path.join(dir, filename);
-      fs.writeFileSync(filepath, buffer);
-      // FIX: return absolute URL so the frontend can use it cross-origin
-      const absoluteUrl = `${BACKEND_URL}${LOCAL_PUBLIC_PATH}/${folder}/${filename}`;
-      console.info(`[storage] R2 not configured — saved locally: ${absoluteUrl}`);
-      return absoluteUrl;
-    } catch (err) {
-      console.error('[storage] Local save failed:', err);
-      return null;
-    }
+  // ── R2 path ──────────────────────────────────────────────────────────────
+  if (R2_CONFIGURED && s3Client) {
+    const rawExt = mimetype.split('/')[1] || 'jpg';
+    const extension = rawExt.replace('jpeg', 'jpg');
+    const key = `${folder}/${uuidv4()}.${extension}`;
+
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+        Body: buffer,
+        ContentType: mimetype,
+        CacheControl: 'public, max-age=31536000',
+      })
+    );
+
+    return `${PUBLIC_URL}/${key}`;
   }
 
-  const rawExt = mimetype.split('/')[1] || 'jpg';
-  const extension = rawExt.replace('jpeg', 'jpg');
-  const key = `${folder}/${uuidv4()}.${extension}`;
+  // ── Base64 DB path (dev / no R2) ─────────────────────────────────────────
+  // Warn if image is very large — it will bloat DB rows.
+  if (buffer.length > MAX_BASE64_BYTES) {
+    console.warn(
+      `[storage] Image too large for DB storage (${(buffer.length / 1024).toFixed(0)} KB > 2 MB). ` +
+      `Configure R2 for production use.`
+    );
+    // Still store it — let the caller decide whether to reject.
+  }
 
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: key,
-      Body: buffer,
-      ContentType: mimetype,
-      CacheControl: 'public, max-age=31536000',
-    })
-  );
-
-  return `${PUBLIC_URL}/${key}`;
+  const base64 = buffer.toString('base64');
+  const dataUri = `data:${mimetype};base64,${base64}`;
+  console.info(`[storage] R2 not configured — storing image as base64 data URI in DB (${(buffer.length / 1024).toFixed(0)} KB)`);
+  return dataUri;
 };
 
 /**
- * Delete a file from R2 (or local disk in dev) by its public URL.
+ * Delete a file from R2 by its public URL.
+ * Base64 data URIs don't need deletion (they live in DB rows).
  */
 const deleteFile = async (publicUrl) => {
   if (!publicUrl) return;
 
-  // Local file — handle both old relative paths and new absolute paths
-  const localRelative = `${BACKEND_URL}${LOCAL_PUBLIC_PATH}`;
-  if (publicUrl.startsWith(localRelative) || publicUrl.startsWith(LOCAL_PUBLIC_PATH)) {
-    try {
-      const relativePath = publicUrl
-        .replace(localRelative, '')
-        .replace(LOCAL_PUBLIC_PATH, '');
-      const filepath = path.join(LOCAL_UPLOADS_DIR, relativePath);
-      if (fs.existsSync(filepath)) {
-        fs.unlinkSync(filepath);
-      }
-    } catch (err) {
-      console.error('[storage] Local delete failed:', err);
-    }
-    return;
-  }
+  // Base64 data URIs are stored in the DB — nothing to delete from disk/R2
+  if (publicUrl.startsWith('data:')) return;
 
   if (!R2_CONFIGURED || !s3Client || !PUBLIC_URL) return;
+
   const key = publicUrl.replace(`${PUBLIC_URL}/`, '');
   await s3Client.send(
     new DeleteObjectCommand({
@@ -122,7 +104,7 @@ const deleteFile = async (publicUrl) => {
 
 /**
  * Generate a presigned upload URL (for direct browser uploads).
- * Throws if R2 is not configured.
+ * Only available when R2 is configured.
  */
 const getPresignedUploadUrl = async (folder, mimetype) => {
   if (!R2_CONFIGURED || !s3Client) {

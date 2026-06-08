@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { toast } from 'react-hot-toast';
-import { TrendingUp, Zap, Wallet } from 'lucide-react';
+import { TrendingUp, Zap, Wallet, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 import Button from '../shared/Button';
 import { formatCurrency, shortCurrency } from '../../utils/format';
@@ -14,10 +14,6 @@ interface BidPanelProps {
   disabled?: boolean;
 }
 
-/**
- * Generate sensible quick-bid amounts that scale to the actual bid context.
- * If bid_increment is huge relative to budget, fall back to smaller steps.
- */
 function getQuickAmounts(
   minBid: number,
   bidIncrement: number,
@@ -27,12 +23,9 @@ function getQuickAmounts(
   const cap = bidCapAmount ?? Infinity;
   const budget = remainingBudget;
 
-  // Choose step size: prefer bid_increment but scale down if it would eat all budget in 1 step
   let step = bidIncrement;
   if (step > budget * 0.5) {
-    // Step is more than 50% of budget — use smaller increments
     step = Math.max(1, Math.floor(budget / 5));
-    // Round to a "nice" number
     const magnitude = Math.pow(10, Math.floor(Math.log10(step)));
     step = Math.round(step / magnitude) * magnitude || 1;
   }
@@ -69,7 +62,23 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
     : Math.max(basePrice, auction.starting_bid || 0);
 
   const isLeader = myTeam?.id === liveItem.current_leader_team_id;
-  const canBid = !disabled && myTeam && !isLeader && (myTeam.remaining_budget >= minBid);
+  const hasEnoughBudget = myTeam ? myTeam.remaining_budget >= minBid : false;
+  const canBid = !disabled && myTeam && !isLeader && hasEnoughBudget;
+
+  // FIX: surface a clear reason why bidding is blocked
+  const blockReason: string | null = (() => {
+    if (!myTeam) return null;
+    if (isLeader) return null; // shown separately
+    if (disabled) return 'paused';
+    if (!hasEnoughBudget) {
+      // Distinguish: budget is simply less than minBid vs less than base price
+      if (myTeam.remaining_budget < basePrice) {
+        return `Your budget (${formatCurrency(myTeam.remaining_budget, auction.currency)}) is below the base price of ${formatCurrency(basePrice, auction.currency)}`;
+      }
+      return `You need ${formatCurrency(minBid, auction.currency)} to bid but only have ${formatCurrency(myTeam.remaining_budget, auction.currency)}`;
+    }
+    return null;
+  })();
 
   const quickAmounts = myTeam
     ? getQuickAmounts(
@@ -138,9 +147,16 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
         </div>
       )}
 
-      {!isLeader && !canBid && myTeam.remaining_budget < minBid && (
-        <div className="bg-red-900/30 border border-red-800 rounded-lg p-2 text-center">
-          <p className="text-red-400 text-sm">Insufficient budget</p>
+      {/* FIX: show specific reason instead of generic "Insufficient budget" */}
+      {!isLeader && blockReason && blockReason !== 'paused' && (
+        <div className="bg-red-900/30 border border-red-800 rounded-lg p-3">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+            <p className="text-red-400 text-xs leading-relaxed">{blockReason}</p>
+          </div>
+          <p className="text-gray-500 text-xs mt-1.5 ml-5">
+            Minimum required: <span className="text-gray-300 font-medium">{formatCurrency(minBid, auction.currency)}</span>
+          </p>
         </div>
       )}
 

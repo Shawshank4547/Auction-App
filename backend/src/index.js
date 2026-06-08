@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -36,28 +35,22 @@ const io = new Server(server, {
   pingInterval: 10000,
 });
 
-// Make io available to controllers
 app.set('io', io);
 timerService.setIO(io);
 setupSocket(io);
 
 // ── Middleware ───────────────────────────────────────────────────
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-}));
-
+app.use(helmet());
 app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   credentials: true,
 }));
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '20mb' })); // increased to handle base64 image payloads
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// FIX: Serve locally uploaded files (dev mode when R2 is not configured)
-// In production with R2 this folder will be empty, so no harm done
-const uploadsDir = path.join(process.cwd(), 'uploads');
-app.use('/uploads', express.static(uploadsDir));
+// NOTE: No express.static('/uploads') — images are stored as base64 in the DB,
+// so there is no local uploads folder to serve. Use R2 for production CDN hosting.
 
 // Rate limiting
 const limiter = rateLimit({
@@ -69,7 +62,6 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
-// Stricter limiter for auth
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -98,7 +90,6 @@ server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down gracefully');
   server.close(() => {

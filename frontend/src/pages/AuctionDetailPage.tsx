@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
-  Play, Pause, Users, List, Settings, ChevronRight,
+  Play, Users, List, Settings,
   Gavel, Trophy, ArrowLeft
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
@@ -74,9 +74,10 @@ const AuctionDetailPage: React.FC = () => {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header */}
+      {/* Header — FIX: navigate to /auctions instead of -1 so completed auctions
+          don't loop back to the live page in browser history */}
       <div className="flex items-start gap-4">
-        <button onClick={() => navigate(-1)} className="p-2 rounded-lg hover:bg-gray-800 text-gray-400 mt-1">
+        <button onClick={() => navigate('/auctions')} className="p-2 rounded-lg hover:bg-gray-800 text-gray-400 mt-1">
           <ArrowLeft size={20} />
         </button>
         <div className="flex-1">

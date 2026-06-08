@@ -16,15 +16,9 @@ export const formatCurrency = (amount: number, currency = 'INR'): string => {
   }).format(amount);
 };
 
-/**
- * Format number with Indian comma style (e.g., 10,00,000)
- */
 export const formatNumber = (n: number): string =>
   new Intl.NumberFormat('en-IN').format(n);
 
-/**
- * Format seconds as MM:SS
- */
 export const formatTimer = (seconds: number): string => {
   const s = Math.max(0, Math.floor(seconds));
   const m = Math.floor(s / 60);
@@ -32,18 +26,12 @@ export const formatTimer = (seconds: number): string => {
   return `${m.toString().padStart(2, '0')}:${rem.toString().padStart(2, '0')}`;
 };
 
-/**
- * Get timer colour class based on remaining time
- */
 export const getTimerClass = (seconds: number): string => {
   if (seconds <= 10) return 'text-red-500';
   if (seconds <= 30) return 'text-yellow-500';
   return 'text-green-500';
 };
 
-/**
- * Relative time (e.g., "2 minutes ago")
- */
 export const timeAgo = (dateStr: string): string => {
   const diff = Date.now() - new Date(dateStr).getTime();
   const seconds = Math.floor(diff / 1000);
@@ -55,10 +43,6 @@ export const timeAgo = (dateStr: string): string => {
   return new Date(dateStr).toLocaleDateString();
 };
 
-/**
- * Short currency format with symbol — always shows the currency sign.
- * e.g. ₹10L, ₹1Cr, ₹500, $1.5M
- */
 export const shortCurrency = (amount: number, currency = 'INR'): string => {
   const symbol = currency === 'INR' ? '₹'
     : currency === 'USD' ? '$'
@@ -73,21 +57,23 @@ export const shortCurrency = (amount: number, currency = 'INR'): string => {
     return `${symbol}${amount.toLocaleString('en-IN')}`;
   }
 
-  // Non-INR
   if (amount >= 1_000_000_000) return `${symbol}${(amount / 1_000_000_000).toFixed(1)}B`;
   if (amount >= 1_000_000) return `${symbol}${(amount / 1_000_000).toFixed(1)}M`;
   if (amount >= 1_000) return `${symbol}${(amount / 1_000).toFixed(0)}K`;
   return `${symbol}${amount.toLocaleString()}`;
 };
 
-/**
- * Resolve an image URL — handles both absolute (http/https) and relative (/uploads/...) paths.
- * For relative paths, prepends the backend base URL so images work cross-origin.
- */
 const BACKEND_BASE = (process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001').replace(/\/$/, '');
 
+/**
+ * Resolve an image URL. Handles:
+ *  - data: URIs (base64 stored in DB) → returned as-is
+ *  - absolute http/https URLs (R2 CDN) → returned as-is
+ *  - relative paths (/uploads/...) → prepend backend base (legacy)
+ */
 export const resolveImageUrl = (url: string | null | undefined): string | null => {
   if (!url) return null;
+  if (url.startsWith('data:')) return url;
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
   return `${BACKEND_BASE}${url}`;
 };

@@ -10,15 +10,19 @@ interface LivePlayerCardProps {
   currency?: string;
 }
 
-// Resolve image URL — handles both absolute (http/https) and relative (/uploads/...) paths.
-// For relative paths, prepend the backend origin so images work cross-origin.
 const BACKEND_URL = (process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001').replace(/\/$/, '');
 
+/**
+ * Resolve image URL:
+ * - data: URIs (base64) → returned as-is (stored directly in DB)
+ * - absolute http/https URLs → returned as-is (R2 CDN)
+ * - relative paths → prepend backend origin (legacy)
+ */
 function resolveImageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
+  if (url.startsWith('data:')) return url;              // base64 DB storage
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  // Relative path — prepend backend base
-  return `${BACKEND_URL}${url}`;
+  return `${BACKEND_URL}${url}`;                        // legacy relative path
 }
 
 const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' }) => {
@@ -27,15 +31,15 @@ const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' 
 
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
-      {/* Player photo */}
-      <div className="relative h-48 bg-gradient-to-br from-blue-900/40 to-purple-900/40 flex items-center justify-center">
+      {/* Player photo — FIX: overflow-hidden on the container so the image
+          never bleeds outside the rounded card */}
+      <div className="relative h-48 bg-gradient-to-br from-blue-900/40 to-purple-900/40 flex items-center justify-center overflow-hidden">
         {photoUrl ? (
           <img
             src={photoUrl}
             alt={item.player_name}
-            className="h-full w-full object-cover"
+            className="absolute inset-0 h-full w-full object-cover object-top"
             onError={(e) => {
-              // If image fails to load, hide it and show the fallback icon
               (e.target as HTMLImageElement).style.display = 'none';
               const parent = (e.target as HTMLImageElement).parentElement;
               if (parent) {
@@ -45,7 +49,8 @@ const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' 
             }}
           />
         ) : null}
-        {/* Fallback icon — shown when no photo or photo fails */}
+
+        {/* Fallback icon */}
         <div
           data-fallback
           className="absolute inset-0 flex items-center justify-center"
@@ -54,13 +59,15 @@ const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' 
           <User size={64} className="text-gray-600" />
         </div>
 
-        <div className="absolute top-3 left-3">
+        {/* LIVE badge */}
+        <div className="absolute top-3 left-3 z-10">
           <span className="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full animate-pulse">
             LIVE
           </span>
         </div>
+
         {item.category && (
-          <div className="absolute top-3 right-3">
+          <div className="absolute top-3 right-3 z-10">
             <Badge variant="info">{item.category}</Badge>
           </div>
         )}

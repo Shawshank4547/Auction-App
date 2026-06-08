@@ -60,6 +60,9 @@ const AuctionManagePage: React.FC = () => {
     }).catch(() => toast.error('Failed to load')).finally(() => setLoading(false));
   }, [id]);
 
+  // FIX: canEditAuction gates ALL mutations (add + delete + edit), not just delete
+  const canEditAuction = auction?.status === 'draft' || auction?.status === 'scheduled';
+
   const openAddTeam = () => {
     setEditingTeam(null);
     setTeamForm({ name: '', totalBudget: '', maxPlayers: '25' });
@@ -74,7 +77,6 @@ const AuctionManagePage: React.FC = () => {
       totalBudget: String(team.total_budget),
       maxPlayers: String(team.max_players),
     });
-    // Pre-populate owner if team has one
     setTeamOwner(
       team.owner_id && team.owner_name
         ? { id: team.owner_id, name: team.owner_name, email: (team as any).owner_email || '' }
@@ -226,8 +228,6 @@ const AuctionManagePage: React.FC = () => {
   if (loading) return <Spinner className="py-20" />;
   if (!auction) return <div className="text-center py-20 text-gray-400">Auction not found</div>;
 
-  const canEditAuction = auction.status === 'draft' || auction.status === 'scheduled';
-
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
@@ -260,10 +260,21 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Teams ({teams.length})</h2>
-            <Button size="sm" onClick={openAddTeam}>
-              <Plus size={14} className="mr-1" /> Add Team
-            </Button>
+            {/* FIX: only show Add Team button when auction is editable */}
+            {canEditAuction && (
+              <Button size="sm" onClick={openAddTeam}>
+                <Plus size={14} className="mr-1" /> Add Team
+              </Button>
+            )}
           </div>
+
+          {/* FIX: show read-only notice when auction is live/completed */}
+          {!canEditAuction && (
+            <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
+              Auction is {auction.status.replace(/_/g, ' ')} — teams cannot be added or deleted. You can still reassign owners.
+            </p>
+          )}
+
           {teams.length === 0 && (
             <div className="text-center py-8 text-gray-500 text-sm bg-gray-900 rounded-xl border border-gray-800">
               No teams yet. Add your first team above.
@@ -292,6 +303,7 @@ const AuctionManagePage: React.FC = () => {
               >
                 <Edit2 size={15} />
               </button>
+              {/* FIX: delete only when editable */}
               {canEditAuction && (
                 <button
                   onClick={() => handleDeleteTeam(t.id)}
@@ -311,13 +323,24 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Players ({players.length})</h2>
-            <Button size="sm" onClick={openAddPlayer}>
-              <Plus size={14} className="mr-1" /> Add Player
-            </Button>
+            {/* FIX: only show Add Player button when auction is editable */}
+            {canEditAuction && (
+              <Button size="sm" onClick={openAddPlayer}>
+                <Plus size={14} className="mr-1" /> Add Player
+              </Button>
+            )}
           </div>
+
+          {/* FIX: show read-only notice when live/completed */}
+          {!canEditAuction && (
+            <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
+              Auction is {auction.status.replace(/_/g, ' ')} — new players cannot be added.
+            </p>
+          )}
+
           {players.length === 0 && (
             <div className="text-center py-8 text-gray-500 text-sm bg-gray-900 rounded-xl border border-gray-800">
-              No players yet. Add your first player above.
+              No players yet.
             </div>
           )}
           <div className="space-y-2">
@@ -337,7 +360,7 @@ const AuctionManagePage: React.FC = () => {
                 <Badge variant={p.status === 'sold' ? 'success' : p.status === 'available' ? 'info' : 'default'} size="sm">
                   {p.status}
                 </Badge>
-                {p.status === 'draft' && (
+                {p.status === 'draft' && canEditAuction && (
                   <Button size="sm" variant="ghost" onClick={() => handleSchedulePlayer(p.id)}>Schedule</Button>
                 )}
                 {['draft', 'available', 'unsold'].includes(p.status) && (
@@ -349,7 +372,8 @@ const AuctionManagePage: React.FC = () => {
                     <Edit2 size={14} />
                   </button>
                 )}
-                {(p.status === 'draft' || p.status === 'available') && (
+                {/* FIX: delete only when editable */}
+                {canEditAuction && (p.status === 'draft' || p.status === 'available') && (
                   <button
                     onClick={() => handleDeletePlayer(p.id)}
                     className="p-1.5 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
@@ -432,7 +456,6 @@ const AuctionManagePage: React.FC = () => {
             onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })}
           />
 
-          {/* Owner picker */}
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-gray-300">
               Team Owner / Manager
