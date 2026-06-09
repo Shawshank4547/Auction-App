@@ -52,27 +52,39 @@ const placeBid = async (req, res) => {
       if (result.capReached) {
         timerService.stopTimer(auctionItemId);
 
-        const newRound = await query(
-          `INSERT INTO tie_break_rounds (auction_item_id, round_number)
-           VALUES ($1, 1)
-           RETURNING *`,
-          [auctionItemId]
-        );
-
-        // Get all teams that bid at cap
-        const eligibleTeams = await query(
-          `SELECT DISTINCT team_id FROM bids
+        // Count how many DIFFERENT teams have bids at the cap amount
+        const capBidsResult = await query(
+          `SELECT COUNT(DISTINCT team_id) as team_count FROM bids
            WHERE auction_item_id = $1 AND amount = $2 AND status = 'accepted'`,
           [auctionItemId, parseInt(amount)]
         );
 
-        io.to(`auction:${auctionId}`).emit('tiebreak:start', {
-          auctionItemId,
-          tieBreakRoundId: newRound.rows[0].id,
-          roundNumber: 1,
-          eligibleTeams: eligibleTeams.rows.map((r) => r.team_id),
-          capAmount: parseInt(amount),
-        });
+        const teamCount = parseInt(capBidsResult.rows[0].team_count);
+
+        // Only trigger tie-break if 2+ teams are at the cap
+        if (teamCount >= 2) {
+          const newRound = await query(
+            `INSERT INTO tie_break_rounds (auction_item_id, round_number)
+             VALUES ($1, 1)
+             RETURNING *`,
+            [auctionItemId]
+          );
+
+          // Get all teams that bid at cap
+          const eligibleTeams = await query(
+            `SELECT DISTINCT team_id FROM bids
+             WHERE auction_item_id = $1 AND amount = $2 AND status = 'accepted'`,
+            [auctionItemId, parseInt(amount)]
+          );
+
+          io.to(`auction:${auctionId}`).emit('tiebreak:start', {
+            auctionItemId,
+            tieBreakRoundId: newRound.rows[0].id,
+            roundNumber: 1,
+            eligibleTeams: eligibleTeams.rows.map((r) => r.team_id),
+            capAmount: parseInt(amount),
+          });
+        }
       }
     }
 

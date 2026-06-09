@@ -80,31 +80,68 @@ const processBid = async ({ auctionId, auctionItemId, teamId, bidderId, amount, 
       return { success: false, reason: 'Your team is already the highest bidder' };
     }
 
-    // 8. Validate bid amount
-    // FIX: First bid must be >= base_price (or starting_bid), not just bid_increment
+    // 8. FIX: Validate bid amount with proper increment enforcement
+    const bidIncrement = Number(item.bid_increment);
+    const currentPrice = Number(item.current_price ?? 0);
+    const playerBasePrice = Number(item.base_price ?? 0);
+    const startingBid = Number(item.starting_bid ?? 0);
+
+    // Determine base price (the first valid bid amount)
+    const basePrice = playerBasePrice > 0 ? playerBasePrice : startingBid > 0 ? startingBid : bidIncrement;
+
     let minBid;
-    if (item.current_price && item.current_price > 0) {
-      // There are existing bids — must beat current price by at least one increment
-      minBid = item.current_price + item.bid_increment;
-    } else {
-      // First bid — must meet the base price of the player (or auction starting_bid)
-      const basePrice = item.base_price || item.starting_bid || item.bid_increment;
+
+    if (currentPrice === 0 || !currentPrice) {
+      // First bid — must be exactly the base price
       minBid = basePrice;
+    } else {
+      // Existing bids — next bid must be current + increment
+      minBid = currentPrice + bidIncrement;
+    }
+
+    // Ensure minBid is reasonable (sanity check)
+    if (minBid < 0 || minBid > 999999999) {
+      await client.query('ROLLBACK');
+      return { success: false, reason: 'Invalid minimum bid calculation' };
     }
 
     if (amount < minBid) {
       await client.query('ROLLBACK');
-      return { success: false, reason: `Minimum bid is ${minBid.toLocaleString('en-IN')}` };
+      return {
+        success: false,
+        reason: `Minimum bid is ${minBid.toLocaleString('en-IN')}`,
+        minBid,
+      };
+    }
+
+    // FIX: Enforce increment rule — but allow the FIRST bid to be base price
+    // After first bid, all subsequent bids must follow: basePrice + N * increment
+    if (currentPrice > 0) {
+      // There are existing bids - validate increment pattern
+      // The amount must be: basePrice + N * increment, where N >= 1
+      const amountAboveBase = amount - basePrice;
+      if (amountAboveBase <= 0 || amountAboveBase % bidIncrement !== 0) {
+        // Round up to next valid increment
+        const nextValidAboveBase = Math.ceil(amountAboveBase / bidIncrement) * bidIncrement;
+        const nextValid = basePrice + nextValidAboveBase;
+        await client.query('ROLLBACK');
+        return {
+          success: false,
+          reason: `Bids must increment by ${bidIncrement}. Next valid bid is ${nextValid.toLocaleString('en-IN')}`,
+          minBid: minBid,
+          suggestedBid: nextValid,
+        };
+      }
     }
 
     // 9. Check bid cap
-    if (item.bid_cap_enabled && item.bid_cap_amount && amount > item.bid_cap_amount) {
+    if (item.bid_cap_enabled && item.bid_cap_amount && amount > Number(item.bid_cap_amount)) {
       await client.query('ROLLBACK');
-      return { success: false, reason: `Bid exceeds maximum cap of ${item.bid_cap_amount}` };
+      return { success: false, reason: `Bid exceeds maximum cap of ${Number(item.bid_cap_amount).toLocaleString('en-IN')}` };
     }
 
     // 10. Check team budget
-    if (amount > team.remaining_budget) {
+    if (amount > Number(team.remaining_budget)) {
       await client.query('ROLLBACK');
       return { success: false, reason: 'Insufficient budget' };
     }
@@ -142,7 +179,16 @@ const processBid = async ({ auctionId, auctionItemId, teamId, bidderId, amount, 
     }
 
     // 14. Check if bid cap reached
-    const capReached = item.bid_cap_enabled && item.bid_cap_amount && amount >= item.bid_cap_amount;
+    const capReached = item.bid_cap_enabled && item.bid_cap_amount && amount >= Number(item.bid_cap_amount);
+
+    // Calculate next valid bids for UI
+    const nextMinBid = amount + bidIncrement;
+    const nextValidBids = [
+      nextMinBid,
+      nextMinBid + bidIncrement,
+      nextMinBid + (bidIncrement * 2),
+      nextMinBid + (bidIncrement * 3),
+    ].filter(b => !item.bid_cap_enabled || b <= (Number(item.bid_cap_amount) || Infinity));
 
     await auditService.log({
       auctionId,
@@ -159,6 +205,8 @@ const processBid = async ({ auctionId, auctionItemId, teamId, bidderId, amount, 
       bid,
       capReached: !!capReached,
       timeRemaining: timerService.getTimeRemaining(auctionItemId),
+      nextMinBid,
+      nextValidBids,
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -195,12 +243,12 @@ const submitTieBreakBid = async ({ tieBreakRoundId, teamId, bidderId, amount }) 
     const round = roundResult.rows[0];
 
     const teamResult = await client.query(`SELECT remaining_budget FROM teams WHERE id = $1`, [teamId]);
-    if (!teamResult.rows.length || amount > teamResult.rows[0].remaining_budget) {
+    if (!teamResult.rows.length || amount > Number(teamResult.rows[0].remaining_budget)) {
       await client.query('ROLLBACK');
       return { success: false, reason: 'Insufficient budget for tie-break bid' };
     }
 
-    if (round.bid_cap_amount && amount < round.bid_cap_amount) {
+    if (round.bid_cap_amount && amount < Number(round.bid_cap_amount)) {
       await client.query('ROLLBACK');
       return { success: false, reason: 'Tie-break bid must be at or above the cap amount' };
     }

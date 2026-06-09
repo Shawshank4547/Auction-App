@@ -15,34 +15,48 @@ interface BidPanelProps {
 }
 
 function getQuickAmounts(
+  currentPrice: number,
   minBid: number,
   bidIncrement: number,
+  basePrice: number,
   remainingBudget: number,
   bidCapAmount: number | null
 ): number[] {
   const cap = bidCapAmount ?? Infinity;
 
-  let step = bidIncrement;
-  if (step > remainingBudget * 0.5) {
-    step = Math.max(1, Math.floor(remainingBudget / 5));
-    const magnitude = Math.pow(10, Math.floor(Math.log10(step)));
-    step = Math.round(step / magnitude) * magnitude || 1;
-  }
-
+  // Generate amounts based on bid increment
   const amounts: number[] = [];
-  const candidates = [
-    minBid,
-    minBid + step,
-    minBid + step * 2,
-    minBid + step * 4,
-    minBid + step * 9,
-  ];
-
-  for (const a of candidates) {
-    if (a <= remainingBudget && a <= cap && !amounts.includes(a)) {
-      amounts.push(a);
+  
+  if (currentPrice === 0) {
+    // First bid — show base price + increment options
+    const candidates = [
+      basePrice,
+      basePrice + bidIncrement,
+      basePrice + bidIncrement * 2,
+      basePrice + bidIncrement * 3,
+    ];
+    
+    for (const a of candidates) {
+      if (a <= remainingBudget && a <= cap && !amounts.includes(a)) {
+        amounts.push(a);
+      }
+      if (amounts.length >= 4) break;
     }
-    if (amounts.length >= 4) break;
+  } else {
+    // Subsequent bids — show current + increment options
+    const candidates = [
+      minBid,
+      minBid + bidIncrement,
+      minBid + bidIncrement * 2,
+      minBid + bidIncrement * 3,
+    ];
+    
+    for (const a of candidates) {
+      if (a <= remainingBudget && a <= cap && !amounts.includes(a)) {
+        amounts.push(a);
+      }
+      if (amounts.length >= 4) break;
+    }
   }
 
   return amounts;
@@ -56,14 +70,18 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
   const currentPrice = Number(liveItem.current_price ?? 0);
   const bidIncrement = Number(auction.bid_increment);
   const remainingBudget = myTeam ? Number(myTeam.remaining_budget) : 0;
-  const playerBasePrice = Number(liveItem.base_price ?? bidIncrement);
+  const playerBasePrice = Number(liveItem.base_price ?? 0);
+  const startingBid = Number(auction.starting_bid ?? 0);
   const bidCapAmount = auction.bid_cap_enabled && auction.bid_cap_amount
     ? Number(auction.bid_cap_amount)
     : null;
 
+  // Determine base price (the first valid bid amount)
+  const basePrice = playerBasePrice > 0 ? playerBasePrice : startingBid > 0 ? startingBid : bidIncrement;
+
   const minBid = currentPrice > 0
     ? currentPrice + bidIncrement
-    : playerBasePrice; // first bid: meet the player's base price
+    : basePrice; // first bid: exactly the base price
 
   const isLeader = myTeam?.id === liveItem.current_leader_team_id;
   const hasEnoughBudget = myTeam ? remainingBudget >= minBid : false;
@@ -75,36 +93,69 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
   })();
 
   const quickAmounts = myTeam
-    ? getQuickAmounts(minBid, bidIncrement, remainingBudget, bidCapAmount)
+    ? getQuickAmounts(currentPrice, minBid, bidIncrement, basePrice, remainingBudget, bidCapAmount)
     : [];
 
   const handleBid = async (amount: number) => {
     if (!myTeam || !canBid) return;
     setLoading(true);
     try {
-      await api.post(`/auctions/${auction.id}/bids`, {
+      const response = await api.post(`/auctions/${auction.id}/bids`, {
         auctionItemId: liveItem.id,
         teamId: myTeam.id,
         amount,
       });
+      setCustomAmount('');
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Bid failed');
+      const errorMsg = err.response?.data?.message || 'Bid failed';
+      toast.error(errorMsg);
     } finally {
       setLoading(false);
     }
   };
 
+  const validateAndSubmitCustomBid = (amountStr: string): boolean => {
+    const amount = parseInt(amountStr.replace(/[^0-9]/g, ''), 10);
+    
+    if (!amount) {
+      toast.error(`Enter a valid amount`);
+      return false;
+    }
+
+    if (amount < minBid) {
+      toast.error(`Minimum bid is ${formatCurrency(minBid, auction.currency)}`);
+      return false;
+    }
+
+    // FIX: Validate increment rule, but allow first bid to be base price
+    if (currentPrice > 0) {
+      // There are existing bids — validate increment pattern
+      const amountAboveBase = amount - basePrice;
+      if (amountAboveBase <= 0 || amountAboveBase % bidIncrement !== 0) {
+        const nextValidAboveBase = Math.ceil(amountAboveBase / bidIncrement) * bidIncrement;
+        const nextValid = basePrice + nextValidAboveBase;
+        toast.error(`Bids must increment by ${formatCurrency(bidIncrement, auction.currency)}. Try ${formatCurrency(nextValid, auction.currency)}`)
+        return false;
+      }
+    }
+
+    if (myTeam && amount > remainingBudget) {
+      toast.error(`Amount exceeds your budget of ${formatCurrency(remainingBudget, auction.currency)}`)
+      return false;
+    }
+
+    if (bidCapAmount && amount > bidCapAmount) {
+      toast.error(`Amount exceeds bid cap of ${formatCurrency(bidCapAmount, auction.currency)}`)
+      return false;
+    }
+
+    return true;
+  };
+
   const handleCustomBid = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!validateAndSubmitCustomBid(customAmount)) return;
     const amount = parseInt(customAmount.replace(/[^0-9]/g, ''), 10);
-    if (!amount || amount < minBid) {
-      toast.error(`Minimum bid is ${formatCurrency(minBid, auction.currency)}`);
-      return;
-    }
-    if (myTeam && amount > remainingBudget) {
-      toast.error(`Amount exceeds your budget of ${formatCurrency(remainingBudget, auction.currency)}`);
-      return;
-    }
     await handleBid(amount);
     setCustomAmount('');
   };
