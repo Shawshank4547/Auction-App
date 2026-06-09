@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Pause, Play, SkipForward, ArrowLeft, Flag, X, List, Trophy, CheckCircle } from 'lucide-react';
+import { Pause, Play, SkipForward, ArrowLeft, Flag, X, List, Trophy, CheckCircle, RefreshCw } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
@@ -37,6 +37,13 @@ const LiveAuctionPage: React.FC = () => {
   const [showQueue, setShowQueue] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
 
+  // Round transition state
+  const [roundTransition, setRoundTransition] = useState<null | {
+    nextStatus: string;
+    hasUnsold: boolean;
+    unsoldCount: number;
+  }>(null);
+
   const fetchState = useCallback(async () => {
     if (!id) return;
     try {
@@ -65,6 +72,17 @@ const LiveAuctionPage: React.FC = () => {
           setMyTeam(null);
         }
       }
+
+      // If we load onto a round-transition status, show the transition UI
+      if (auction.status === 'round1_complete' || auction.status === 'round2_complete') {
+        // Count unsold in the current round from items
+        const unsoldCount = itemsRes.data.data.filter((i: any) => i.status === 'unsold').length;
+        setRoundTransition({
+          nextStatus: auction.status,
+          hasUnsold: unsoldCount > 0,
+          unsoldCount,
+        });
+      }
     } catch {
       toast.error('Failed to load auction state');
     } finally {
@@ -87,7 +105,24 @@ const LiveAuctionPage: React.FC = () => {
     }
   }, [teams]);
 
+  // Listen for round complete socket events
   useAuctionSocket({ auctionId: id!, myTeamId: myTeam?.id });
+
+  // Handle round complete events from the socket hook by watching auctionEnded and currentAuction.status
+  useEffect(() => {
+    if (!currentAuction) return;
+    if (currentAuction.status === 'round1_complete' || currentAuction.status === 'round2_complete') {
+      // Fetch updated items to get unsold count
+      api.get(`/auctions/${id}/items?round=${currentAuction.current_round}`).then((res) => {
+        const unsoldCount = res.data.data.filter((i: any) => i.status === 'unsold').length;
+        setRoundTransition({
+          nextStatus: currentAuction.status,
+          hasUnsold: unsoldCount > 0,
+          unsoldCount,
+        });
+      }).catch(() => {});
+    }
+  }, [currentAuction?.status]);
 
   const isOrganizer = user?.role === 'super_admin' ||
     (currentAuction?.organizer_id === user?.id);
@@ -117,16 +152,57 @@ const LiveAuctionPage: React.FC = () => {
     }
   };
 
-  const handleEndAuction = async () => {
+  const handleEndRound = async () => {
     if (!id) return;
     setActionLoading(true);
     setShowEndConfirm(false);
     try {
-      await api.post(`/auctions/${id}/end`);
-      toast.success('Auction ended');
-      navigate(`/auctions/${id}`);
+      const res = await api.post(`/auctions/${id}/end`);
+      const { nextStatus, hasUnsold } = res.data.data;
+
+      if (nextStatus === 'completed') {
+        toast.success('Auction ended');
+        navigate(`/auctions/${id}`);
+      } else {
+        // Round 1 or 2 complete — stay on page, show transition UI
+        const currentRound = currentAuction?.current_round || 1;
+        const itemsRes = await api.get(`/auctions/${id}/items?round=${currentRound}`);
+        const unsoldCount = itemsRes.data.data.filter((i: any) => i.status === 'unsold').length;
+
+        setRoundTransition({ nextStatus, hasUnsold, unsoldCount });
+        setCurrentAuction({ ...currentAuction!, status: nextStatus as any });
+        setLiveItem(null);
+        setTimeRemaining(null);
+        toast.success(res.data.message);
+      }
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Failed to end auction');
+      toast.error(err.response?.data?.message || 'Failed to end round');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStartNextRound = async (round: 2 | 3) => {
+    if (!id) return;
+    setActionLoading(true);
+    try {
+      const res = await api.post(`/auctions/${id}/start-round${round}`);
+      toast.success(res.data.message);
+
+      // Reload state for the new round
+      const [stateRes, itemsRes] = await Promise.all([
+        api.get(`/auctions/${id}/state`),
+        api.get(`/auctions/${id}/items?round=${round}`),
+      ]);
+      const { auction, teams: t, liveItem: li, timeRemaining: tr } = stateRes.data.data;
+      setCurrentAuction(auction);
+      setTeams(t);
+      setLiveItem(li);
+      setTimeRemaining(tr);
+      setAuctionItems(itemsRes.data.data);
+      setRoundTransition(null);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || `Failed to start Round ${round}`);
     } finally {
       setActionLoading(false);
     }
@@ -137,6 +213,13 @@ const LiveAuctionPage: React.FC = () => {
 
   const pendingItems = auctionItems.filter((i) => i.status === 'pending');
   const auctionIsOver = auctionEnded || currentAuction.status === 'completed';
+  const isInRoundTransition = !!roundTransition ||
+    currentAuction.status === 'round1_complete' ||
+    currentAuction.status === 'round2_complete';
+
+  const roundLabel = currentAuction.current_round === 1 ? 'Round 1'
+    : currentAuction.current_round === 2 ? 'Round 2'
+    : 'Round 3';
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -147,12 +230,20 @@ const LiveAuctionPage: React.FC = () => {
         </button>
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-white truncate">{currentAuction.name}</p>
-          <p className="text-xs text-gray-400">Round {currentAuction.current_round}</p>
+          <p className="text-xs text-gray-400">{roundLabel}</p>
         </div>
-        <Badge variant={auctionIsOver ? 'default' : isPaused ? 'warning' : 'success'} size="sm">
-          {auctionIsOver ? 'ENDED' : isPaused ? 'PAUSED' : 'LIVE'}
+        <Badge variant={
+          auctionIsOver ? 'default'
+            : isInRoundTransition ? 'warning'
+            : isPaused ? 'warning'
+            : 'success'
+        } size="sm">
+          {auctionIsOver ? 'ENDED'
+            : isInRoundTransition ? currentAuction.status.replace(/_/g, ' ').toUpperCase()
+            : isPaused ? 'PAUSED'
+            : 'LIVE'}
         </Badge>
-        {isOrganizer && !auctionIsOver && (
+        {isOrganizer && !auctionIsOver && !isInRoundTransition && (
           <div className="flex gap-2">
             <Button variant={isPaused ? 'success' : 'secondary'} size="sm" loading={actionLoading} onClick={handlePause}>
               {isPaused ? <Play size={14} className="mr-1" /> : <Pause size={14} className="mr-1" />}
@@ -164,14 +255,15 @@ const LiveAuctionPage: React.FC = () => {
               Queue ({pendingItems.length})
             </Button>
             <Button variant="danger" size="sm" onClick={() => setShowEndConfirm(true)}>
-              <Flag size={14} className="mr-1" /> End
+              <Flag size={14} className="mr-1" />
+              {pendingItems.length === 0 ? 'End Round' : 'End'}
             </Button>
           </div>
         )}
       </div>
 
       {/* Pause banner */}
-      {isPaused && !auctionIsOver && (
+      {isPaused && !auctionIsOver && !isInRoundTransition && (
         <div className="sticky top-[57px] z-20 bg-yellow-900/80 border-b border-yellow-700 px-4 py-2 flex items-center justify-center gap-3 backdrop-blur-sm">
           <span className="text-lg">⏸️</span>
           <span className="text-yellow-300 font-semibold text-sm">Auction Paused</span>
@@ -235,14 +327,27 @@ const LiveAuctionPage: React.FC = () => {
       {showEndConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
           <div className="bg-gray-900 border border-red-800 rounded-xl p-6 max-w-sm w-full space-y-4">
-            <h2 className="text-lg font-bold text-white">End Auction?</h2>
+            <h2 className="text-lg font-bold text-white">
+              {pendingItems.length === 0 ? `End ${roundLabel}?` : 'End Auction?'}
+            </h2>
             <p className="text-gray-400 text-sm">
-              This will permanently end the auction. Any player currently being bid on will be marked unsold. This cannot be undone.
+              {pendingItems.length === 0
+                ? currentAuction.enable_round2 && currentAuction.current_round === 1
+                  ? 'This will end Round 1. Unsold players will be eligible for Round 2.'
+                  : currentAuction.enable_round3 && currentAuction.current_round === 2
+                  ? 'This will end Round 2. Unsold players will be eligible for Round 3.'
+                  : 'This will permanently end the auction. This cannot be undone.'
+                : 'There are still players in the queue. Ending now will mark any live player as unsold. This cannot be undone.'
+              }
             </p>
             <div className="flex gap-3">
               <Button variant="ghost" fullWidth onClick={() => setShowEndConfirm(false)}>Cancel</Button>
-              <Button variant="danger" fullWidth loading={actionLoading} onClick={handleEndAuction}>
-                Yes, End Auction
+              <Button variant="danger" fullWidth loading={actionLoading} onClick={handleEndRound}>
+                {pendingItems.length === 0
+                  ? currentAuction.enable_round2 && currentAuction.current_round === 1 ? 'End Round 1'
+                  : currentAuction.enable_round3 && currentAuction.current_round === 2 ? 'End Round 2'
+                  : 'End Auction'
+                  : 'End Now'}
               </Button>
             </div>
           </div>
@@ -258,6 +363,85 @@ const LiveAuctionPage: React.FC = () => {
               <p className="text-gray-400 mb-6">All bidding has ended.</p>
               <Button onClick={() => navigate(`/auctions/${id}`)}>View Results</Button>
             </div>
+            {soldPlayers.length > 0 && (
+              <SoldPlayersList soldPlayers={soldPlayers} currency={currentAuction.currency} myTeamId={myTeam?.id} />
+            )}
+          </div>
+        ) : isInRoundTransition && roundTransition ? (
+          /* ── Round Transition Screen ── */
+          <div className="max-w-lg mx-auto space-y-6 py-8">
+            <div className="text-center">
+              <div className="text-5xl mb-4">🏏</div>
+              <h2 className="text-2xl font-bold text-white mb-2">
+                {roundTransition.nextStatus === 'round1_complete' ? 'Round 1 Complete!' : 'Round 2 Complete!'}
+              </h2>
+              <p className="text-gray-400">
+                {roundTransition.hasUnsold
+                  ? `${roundTransition.unsoldCount} player${roundTransition.unsoldCount > 1 ? 's' : ''} went unsold this round.`
+                  : 'All players were sold this round!'}
+              </p>
+            </div>
+
+            {/* Unsold player summary */}
+            {roundTransition.hasUnsold && (
+              <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-4 text-center">
+                <p className="text-yellow-300 font-semibold">
+                  {roundTransition.unsoldCount} unsold player{roundTransition.unsoldCount > 1 ? 's' : ''} will re-enter
+                </p>
+                <p className="text-yellow-200/60 text-sm mt-1">
+                  {roundTransition.nextStatus === 'round1_complete'
+                    ? currentAuction.round2_base_price_reduction && currentAuction.round2_base_price_type === 'reduced'
+                      ? `Base prices reduced by ${currentAuction.round2_base_price_reduction}% in Round 2`
+                      : 'Same base prices in Round 2'
+                    : currentAuction.round3_base_price_reduction && currentAuction.round3_base_price_type === 'reduced'
+                      ? `Base prices reduced by ${currentAuction.round3_base_price_reduction}% in Round 3`
+                      : 'Same base prices in Round 3'}
+                </p>
+              </div>
+            )}
+
+            {isOrganizer && (
+              <div className="flex flex-col gap-3">
+                {/* Start next round */}
+                {roundTransition.hasUnsold && roundTransition.nextStatus === 'round1_complete' && currentAuction.enable_round2 && (
+                  <Button variant="success" fullWidth size="lg" loading={actionLoading} onClick={() => handleStartNextRound(2)}>
+                    <RefreshCw size={18} className="mr-2" />
+                    Start Round 2 ({roundTransition.unsoldCount} players)
+                  </Button>
+                )}
+                {roundTransition.hasUnsold && roundTransition.nextStatus === 'round2_complete' && currentAuction.enable_round3 && (
+                  <Button variant="success" fullWidth size="lg" loading={actionLoading} onClick={() => handleStartNextRound(3)}>
+                    <RefreshCw size={18} className="mr-2" />
+                    Start Round 3 ({roundTransition.unsoldCount} players)
+                  </Button>
+                )}
+
+                {/* If no more rounds or no unsold → complete the auction */}
+                {(!roundTransition.hasUnsold ||
+                  (roundTransition.nextStatus === 'round1_complete' && !currentAuction.enable_round2) ||
+                  (roundTransition.nextStatus === 'round2_complete' && !currentAuction.enable_round3)) && (
+                  <Button variant="primary" fullWidth size="lg" onClick={() => navigate(`/auctions/${id}`)}>
+                    <Trophy size={18} className="mr-2" />
+                    View Final Results
+                  </Button>
+                )}
+
+                {(roundTransition.nextStatus === 'round1_complete' && !currentAuction.enable_round2) && (
+                  <p className="text-center text-xs text-gray-500">Round 2 is not enabled for this auction.</p>
+                )}
+                {(roundTransition.nextStatus === 'round2_complete' && !currentAuction.enable_round3) && (
+                  <p className="text-center text-xs text-gray-500">Round 3 is not enabled for this auction.</p>
+                )}
+              </div>
+            )}
+
+            {!isOrganizer && (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center">
+                <p className="text-gray-400">Waiting for the organizer to start the next round…</p>
+              </div>
+            )}
+
+            {/* Session history during transition */}
             {soldPlayers.length > 0 && (
               <SoldPlayersList soldPlayers={soldPlayers} currency={currentAuction.currency} myTeamId={myTeam?.id} />
             )}
@@ -324,7 +508,7 @@ const LiveAuctionPage: React.FC = () => {
                       <p className="text-gray-500 text-sm mb-4">
                         {pendingItems.length > 0
                           ? `${pendingItems.length} player${pendingItems.length > 1 ? 's' : ''} remaining in queue`
-                          : 'No more players in queue'}
+                          : 'No more players in queue for this round'}
                       </p>
                       {isOrganizer && pendingItems.length > 0 && (
                         <Button variant="primary" onClick={() => setShowQueue(true)}>
@@ -332,14 +516,19 @@ const LiveAuctionPage: React.FC = () => {
                         </Button>
                       )}
                       {isOrganizer && pendingItems.length === 0 && (
-                        <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
-                          <Flag size={14} className="mr-2" /> End Auction
-                        </Button>
+                        <div className="flex flex-col items-center gap-3">
+                          <p className="text-gray-400 text-sm">All players in this round have been auctioned.</p>
+                          <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
+                            <Flag size={14} className="mr-2" />
+                            {currentAuction.enable_round2 && currentAuction.current_round === 1 ? 'End Round 1'
+                              : currentAuction.enable_round3 && currentAuction.current_round === 2 ? 'End Round 2'
+                              : 'End Auction'}
+                          </Button>
+                        </div>
                       )}
                     </div>
                   )}
 
-                  {/* Sold players history — visible to ALL roles */}
                   {soldPlayers.length > 0 && (
                     <SoldPlayersList
                       soldPlayers={soldPlayers}
@@ -387,7 +576,6 @@ const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-      {/* Header */}
       <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Trophy size={16} className="text-yellow-400" />
@@ -407,7 +595,6 @@ const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency
         </div>
       </div>
 
-      {/* List */}
       <div className="divide-y divide-gray-800/60 max-h-96 overflow-y-auto">
         {soldPlayers.map((entry, idx) => {
           const isSold = !!entry.teamId;
@@ -416,16 +603,11 @@ const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency
           return (
             <div
               key={entry.auctionItemId}
-              className={`flex items-center gap-3 px-4 py-3 transition-colors ${
-                isMyTeam ? 'bg-yellow-900/10' : ''
-              }`}
+              className={`flex items-center gap-3 px-4 py-3 transition-colors ${isMyTeam ? 'bg-yellow-900/10' : ''}`}
             >
-              {/* Rank / index */}
               <span className="text-xs text-gray-600 w-5 shrink-0 text-right">
                 {soldPlayers.length - idx}
               </span>
-
-              {/* Photo */}
               {entry.photoUrl ? (
                 <img
                   src={entry.photoUrl}
@@ -437,8 +619,6 @@ const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency
                   {entry.playerName.charAt(0)}
                 </div>
               )}
-
-              {/* Name + team */}
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white truncate">{entry.playerName}</p>
                 {isSold ? (
@@ -452,21 +632,15 @@ const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency
                   <p className="text-xs text-gray-600 italic">Unsold</p>
                 )}
               </div>
-
-              {/* Price / status */}
               <div className="shrink-0 text-right">
                 {isSold ? (
                   <span className={`text-sm font-bold ${isMyTeam ? 'text-yellow-400' : 'text-green-400'}`}>
                     {shortCurrency(entry.finalPrice, currency)}
                   </span>
                 ) : (
-                  <span className="text-xs text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">
-                    Unsold
-                  </span>
+                  <span className="text-xs text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Unsold</span>
                 )}
               </div>
-
-              {/* Sold indicator */}
               {isSold && (
                 <CheckCircle size={14} className={`shrink-0 ${isMyTeam ? 'text-yellow-400' : 'text-green-500'}`} />
               )}

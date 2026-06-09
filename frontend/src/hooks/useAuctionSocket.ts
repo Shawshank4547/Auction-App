@@ -25,6 +25,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     addSoldPlayer,
     updateTeamBudget,
     markAuctionItemSold,
+    setCurrentAuction,
   } = useAuctionStore();
 
   const { accessToken } = useAuthStore();
@@ -68,6 +69,48 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       setAuctionEnded(true);
       toast('Auction has ended', { icon: '🏁', duration: 6000, position: 'bottom-center' });
     });
+
+    // Round completion events — update auction status in store so LiveAuctionPage
+    // can react and show the transition UI
+    const offRound1Complete = socketService.on<{ auctionId: string; nextStatus: string }>(
+      'auction:round1_complete',
+      (data) => {
+        setLiveItem(null);
+        setTimeRemaining(null);
+        const current = useAuctionStore.getState().currentAuction;
+        if (current) setCurrentAuction({ ...current, status: 'round1_complete' as any });
+        toast('Round 1 complete!', { icon: '✅', duration: 5000, position: 'bottom-center' });
+      }
+    );
+
+    const offRound2Complete = socketService.on<{ auctionId: string; nextStatus: string }>(
+      'auction:round2_complete',
+      (data) => {
+        setLiveItem(null);
+        setTimeRemaining(null);
+        const current = useAuctionStore.getState().currentAuction;
+        if (current) setCurrentAuction({ ...current, status: 'round2_complete' as any });
+        toast('Round 2 complete!', { icon: '✅', duration: 5000, position: 'bottom-center' });
+      }
+    );
+
+    const offRound2Started = socketService.on<{ auctionId: string; playerCount: number }>(
+      'auction:round2_started',
+      (data) => {
+        const current = useAuctionStore.getState().currentAuction;
+        if (current) setCurrentAuction({ ...current, status: 'round2_live' as any, current_round: 2 });
+        toast(`🏏 Round 2 started! ${data.playerCount} players re-entering.`, { duration: 5000, position: 'bottom-center' });
+      }
+    );
+
+    const offRound3Started = socketService.on<{ auctionId: string; playerCount: number }>(
+      'auction:round3_started',
+      (data) => {
+        const current = useAuctionStore.getState().currentAuction;
+        if (current) setCurrentAuction({ ...current, status: 'round3_live' as any, current_round: 3 });
+        toast(`🏏 Round 3 started! ${data.playerCount} players re-entering.`, { duration: 5000, position: 'bottom-center' });
+      }
+    );
 
     // ── Player events ───────────────────────────────────────
     const offIntroduced = socketService.on<{
@@ -133,7 +176,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       };
 
       setLastSold(soldEntry);
-      addSoldPlayer(soldEntry);   // NEW: add to persistent list
+      addSoldPlayer(soldEntry);
 
       setLiveItem(null);
       setTimeRemaining(null);
@@ -166,7 +209,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
         };
 
         setLastSold(unsoldEntry);
-        addSoldPlayer(unsoldEntry);  // NEW: add to persistent list
+        addSoldPlayer(unsoldEntry);
 
         setLiveItem(null);
         setTimeRemaining(null);
@@ -253,6 +296,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     return () => {
       socketService.leaveAuction(auctionId);
       offStarted(); offPaused(); offResumed(); offEnded();
+      offRound1Complete(); offRound2Complete(); offRound2Started(); offRound3Started();
       offIntroduced(); offSold(); offUnsold();
       offBidAccepted(); offBidRejected();
       offTimerTick();

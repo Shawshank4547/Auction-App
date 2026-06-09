@@ -14,13 +14,14 @@ router.get('/', authenticate, auctionController.getAuctions);
 router.get('/:id', authenticate, auctionController.getAuction);
 router.get('/:id/state', authenticate, auctionController.getAuctionState);
 router.get('/:id/items', authenticate, auctionController.getAuctionItems);
-// FIX: new endpoint so bidders can find their team assignment without scanning all auctions
 router.get('/:id/my-participation', authenticate, auctionController.getMyParticipation);
 router.patch('/:id', authenticate, authorize('organizer', 'super_admin'), auctionController.updateAuction);
 router.post('/:id/start', authenticate, authorize('organizer', 'super_admin'), auctionController.startAuction);
 router.post('/:id/pause', authenticate, authorize('organizer', 'super_admin'), auctionController.pauseAuction);
 router.post('/:id/resume', authenticate, authorize('organizer', 'super_admin'), auctionController.resumeAuction);
 router.post('/:id/end', authenticate, authorize('organizer', 'super_admin'), auctionController.endAuction);
+router.post('/:id/start-round2', authenticate, authorize('organizer', 'super_admin'), auctionController.startRound2);
+router.post('/:id/start-round3', authenticate, authorize('organizer', 'super_admin'), auctionController.startRound3);
 router.post('/:id/next-player',
   authenticate, authorize('organizer', 'super_admin'),
   [body('auctionItemId').notEmpty()], validate,

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   Play, Users, List, Settings,
-  Gavel, Trophy, ArrowLeft
+  Gavel, Trophy, ArrowLeft, RefreshCw
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
@@ -16,6 +16,7 @@ import { formatCurrency, shortCurrency } from '../utils/format';
 const statusVariant: Record<string, 'success' | 'warning' | 'danger' | 'info' | 'default'> = {
   live: 'success', round2_live: 'success', round3_live: 'success',
   scheduled: 'info', draft: 'default', completed: 'warning', archived: 'default',
+  round1_complete: 'warning', round2_complete: 'warning',
 };
 
 type Tab = 'overview' | 'teams' | 'players' | 'results';
@@ -67,15 +68,49 @@ const AuctionDetailPage: React.FC = () => {
     }
   };
 
+  const handleStartRound2 = async () => {
+    if (!id) return;
+    setActionLoading(true);
+    try {
+      const res = await api.post(`/auctions/${id}/start-round2`);
+      toast.success(res.data.message || 'Round 2 started!');
+      setAuction((prev) => prev ? { ...prev, status: 'round2_live', current_round: 2 } : prev);
+      navigate(`/auctions/${id}/live`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to start Round 2');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStartRound3 = async () => {
+    if (!id) return;
+    setActionLoading(true);
+    try {
+      const res = await api.post(`/auctions/${id}/start-round3`);
+      toast.success(res.data.message || 'Round 3 started!');
+      setAuction((prev) => prev ? { ...prev, status: 'round3_live', current_round: 3 } : prev);
+      navigate(`/auctions/${id}/live`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to start Round 3');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) return <Spinner className="py-20" />;
   if (!auction) return <div className="text-center text-gray-400 py-20">Auction not found</div>;
 
   const isLive = auction.status.includes('live');
+  const isRound1Complete = auction.status === 'round1_complete';
+  const isRound2Complete = auction.status === 'round2_complete';
+
+  // Count unsold players
+  const unsoldPlayers = players.filter((p) => p.status === 'unsold');
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header — FIX: navigate to /auctions instead of -1 so completed auctions
-          don't loop back to the live page in browser history */}
+      {/* Header */}
       <div className="flex items-start gap-4">
         <button onClick={() => navigate('/auctions')} className="p-2 rounded-lg hover:bg-gray-800 text-gray-400 mt-1">
           <ArrowLeft size={20} />
@@ -91,18 +126,47 @@ const AuctionDetailPage: React.FC = () => {
             {auction.organizer_name} · Round {auction.current_round}
           </p>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex gap-2 shrink-0 flex-wrap justify-end">
           {isOrganizer && (
             <>
-              {isLive ? (
+              {/* Active live round → Go Live */}
+              {isLive && (
                 <Link to={`/auctions/${id}/live`}>
                   <Button variant="success"><Play size={16} className="mr-1" /> Go Live</Button>
                 </Link>
-              ) : (auction.status === 'draft' || auction.status === 'scheduled') ? (
+              )}
+
+              {/* Draft / Scheduled → Start Round 1 */}
+              {(auction.status === 'draft' || auction.status === 'scheduled') && (
                 <Button variant="success" loading={actionLoading} onClick={handleStart}>
-                  <Play size={16} className="mr-1" /> Start
+                  <Play size={16} className="mr-1" /> Start Auction
                 </Button>
-              ) : null}
+              )}
+
+              {/* Round 1 complete → Start Round 2 */}
+              {isRound1Complete && auction.enable_round2 && (
+                <Button variant="success" loading={actionLoading} onClick={handleStartRound2}>
+                  <RefreshCw size={16} className="mr-1" /> Start Round 2
+                  {unsoldPlayers.length > 0 && (
+                    <span className="ml-1.5 bg-white/20 text-white text-xs px-1.5 py-0.5 rounded-full">
+                      {unsoldPlayers.length} unsold
+                    </span>
+                  )}
+                </Button>
+              )}
+
+              {/* Round 2 complete → Start Round 3 */}
+              {isRound2Complete && auction.enable_round3 && (
+                <Button variant="success" loading={actionLoading} onClick={handleStartRound3}>
+                  <RefreshCw size={16} className="mr-1" /> Start Round 3
+                  {unsoldPlayers.length > 0 && (
+                    <span className="ml-1.5 bg-white/20 text-white text-xs px-1.5 py-0.5 rounded-full">
+                      {unsoldPlayers.length} unsold
+                    </span>
+                  )}
+                </Button>
+              )}
+
               <Link to={`/auctions/${id}/manage`}>
                 <Button variant="secondary"><Settings size={16} className="mr-1" /> Manage</Button>
               </Link>
@@ -115,6 +179,39 @@ const AuctionDetailPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Round transition info banners */}
+      {isRound1Complete && (
+        <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-4 flex items-start gap-3">
+          <RefreshCw size={18} className="text-yellow-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-semibold text-yellow-300">Round 1 Complete</p>
+            <p className="text-sm text-yellow-200/70 mt-0.5">
+              {unsoldPlayers.length > 0
+                ? `${unsoldPlayers.length} player${unsoldPlayers.length > 1 ? 's' : ''} went unsold and will re-enter in Round 2.`
+                : 'All players were sold in Round 1.'}
+              {isOrganizer && auction.enable_round2 && unsoldPlayers.length > 0 && ' Click "Start Round 2" above to continue.'}
+              {(!auction.enable_round2 || unsoldPlayers.length === 0) && ' The auction is now complete.'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isRound2Complete && (
+        <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-4 flex items-start gap-3">
+          <RefreshCw size={18} className="text-yellow-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-semibold text-yellow-300">Round 2 Complete</p>
+            <p className="text-sm text-yellow-200/70 mt-0.5">
+              {unsoldPlayers.length > 0
+                ? `${unsoldPlayers.length} player${unsoldPlayers.length > 1 ? 's' : ''} went unsold.`
+                : 'All players were sold in Round 2.'}
+              {isOrganizer && auction.enable_round3 && unsoldPlayers.length > 0 && ' Click "Start Round 3" above to continue.'}
+              {(!auction.enable_round3 || unsoldPlayers.length === 0) && ' The auction is now complete.'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-900 p-1 rounded-xl border border-gray-800 w-fit">

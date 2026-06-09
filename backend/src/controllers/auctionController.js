@@ -238,7 +238,6 @@ const pauseAuction = async (req, res) => {
 
     let timeRemaining = null;
     if (liveItem.rows.length) {
-      // FIX: capture timeRemaining before pausing so we can send it in the socket event
       timeRemaining = timerService.getTimeRemaining(liveItem.rows[0].id);
       await timerService.pauseTimer(id, liveItem.rows[0].id);
     }
@@ -246,7 +245,6 @@ const pauseAuction = async (req, res) => {
     await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_paused', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
-    // FIX: include timeRemaining so all clients freeze at the right time
     if (io) io.to(`auction:${id}`).emit('auction:paused', { auctionId: id, timeRemaining });
 
     return sendSuccess(res, {}, 'Auction paused');
@@ -269,7 +267,6 @@ const resumeAuction = async (req, res) => {
     let timeRemaining = null;
     if (liveItem.rows.length) {
       const item = liveItem.rows[0];
-      // FIX: use paused_time_remaining (what was saved) so clients know what to show
       timeRemaining = item.paused_time_remaining || item.timer_duration;
       await timerService.resumeTimer(id, item.id);
     }
@@ -277,7 +274,6 @@ const resumeAuction = async (req, res) => {
     await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_resumed', entityType: 'auction', entityId: id, ipAddress: req.ip });
 
     const io = req.app.get('io');
-    // FIX: include timeRemaining so all clients resume at the right time
     if (io) io.to(`auction:${id}`).emit('auction:resumed', { auctionId: id, timeRemaining });
 
     return sendSuccess(res, {}, 'Auction resumed');
@@ -376,16 +372,13 @@ const getAuctionState = async (req, res) => {
 
     const liveItem = liveItemRes.rows[0] || null;
 
-    // FIX: Get timeRemaining from memory first, fall back to DB paused_time_remaining
     let timeRemaining = null;
     if (liveItem) {
       timeRemaining = timerService.getTimeRemaining(liveItem.id);
       if (timeRemaining === null) {
-        // Timer not in memory (server restart or paused) — use DB value
         if (liveItem.paused_at && liveItem.paused_time_remaining != null) {
           timeRemaining = liveItem.paused_time_remaining;
         } else if (liveItem.timer_duration) {
-          // Last resort: use full duration (timer might have just started)
           timeRemaining = liveItem.timer_duration;
         }
       }
@@ -444,18 +437,26 @@ const addParticipant = async (req, res) => {
   }
 };
 
+/**
+ * End the current round.
+ * - If round 1 complete and enable_round2: → status = 'round1_complete'
+ * - If round 2 complete and enable_round3: → status = 'round2_complete'
+ * - Otherwise: → status = 'completed'
+ */
 const endAuction = async (req, res) => {
   try {
     const { id } = req.params;
     const auction = await canManageAuction(id, req.user);
     if (!auction) return sendError(res, 'Auction not found', 404);
 
-    const current = await query('SELECT status FROM auctions WHERE id = $1', [id]);
-    const status = current.rows[0]?.status;
-    if (!status || status === 'completed' || status === 'archived') {
+    const current = await query('SELECT status, current_round, enable_round2, enable_round3 FROM auctions WHERE id = $1', [id]);
+    const auctionData = current.rows[0];
+
+    if (!auctionData || auctionData.status === 'completed' || auctionData.status === 'archived') {
       return sendError(res, 'Auction is already completed', 400);
     }
 
+    // Stop any live item timer
     const liveItem = await query(
       `SELECT id FROM auction_items WHERE auction_id = $1 AND status = 'live' LIMIT 1`, [id]
     );
@@ -467,19 +468,272 @@ const endAuction = async (req, res) => {
       );
     }
 
+    // Determine next status
+    const currentRound = parseInt(auctionData.current_round);
+    let nextStatus = 'completed';
+    let eventName = 'auction:ended';
+    let successMsg = 'Auction ended';
+
+    // Count unsold players in current round
+    const unsoldCount = await query(
+      `SELECT COUNT(*) FROM auction_items WHERE auction_id = $1 AND round_number = $2 AND status = 'unsold'`,
+      [id, currentRound]
+    );
+    const hasUnsold = parseInt(unsoldCount.rows[0].count) > 0;
+
+    if (currentRound === 1 && auctionData.enable_round2 && hasUnsold) {
+      nextStatus = 'round1_complete';
+      eventName = 'auction:round1_complete';
+      successMsg = 'Round 1 ended. Round 2 is ready to start.';
+    } else if (currentRound === 2 && auctionData.enable_round3 && hasUnsold) {
+      nextStatus = 'round2_complete';
+      eventName = 'auction:round2_complete';
+      successMsg = 'Round 2 ended. Round 3 is ready to start.';
+    }
+
     await query(
-      `UPDATE auctions SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      `UPDATE auctions SET status = $1, ${nextStatus === 'completed' ? 'completed_at = NOW(),' : ''} updated_at = NOW() WHERE id = $2`,
+      [nextStatus, id]
+    );
+
+    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_round_ended', entityType: 'auction', entityId: id, details: { round: currentRound, nextStatus }, ipAddress: req.ip });
+
+    const io = req.app.get('io');
+    if (io) io.to(`auction:${id}`).emit(eventName, { auctionId: id, nextStatus });
+
+    return sendSuccess(res, { nextStatus, hasUnsold }, successMsg);
+  } catch (err) {
+    return sendError(res, 'Failed to end auction', 500);
+  }
+};
+
+/**
+ * Start Round 2.
+ * Takes all unsold players from round 1, creates new auction_items for round 2
+ * with optionally reduced base prices, then sets auction to round2_live.
+ */
+const startRound2 = async (req, res) => {
+  const client = await getClient();
+  try {
+    const { id } = req.params;
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
+
+    const auctionData = await query(
+      `SELECT status, enable_round2, round2_base_price_type, round2_base_price_reduction
+       FROM auctions WHERE id = $1`,
+      [id]
+    );
+    const a = auctionData.rows[0];
+
+    if (a.status !== 'round1_complete') {
+      return sendError(res, 'Round 1 must be completed before starting Round 2', 400);
+    }
+    if (!a.enable_round2) {
+      return sendError(res, 'Round 2 is not enabled for this auction', 400);
+    }
+
+    // Get all unsold players from round 1
+    const unsoldItems = await query(
+      `SELECT ai.player_id, p.base_price
+       FROM auction_items ai
+       JOIN players p ON ai.player_id = p.id
+       WHERE ai.auction_id = $1 AND ai.round_number = 1 AND ai.status = 'unsold'
+       ORDER BY ai.sequence_order ASC`,
       [id]
     );
 
-    await auditService.log({ auctionId: id, userId: req.user.id, action: 'auction_ended', entityType: 'auction', entityId: id, ipAddress: req.ip });
+    if (!unsoldItems.rows.length) {
+      return sendError(res, 'No unsold players from Round 1', 400);
+    }
+
+    await client.query('BEGIN');
+
+    // Create auction_items for round 2 with adjusted base prices
+    let seq = 0;
+    const round2Items = [];
+    for (const item of unsoldItems.rows) {
+      seq++;
+      let newBasePrice = item.base_price;
+
+      if (a.round2_base_price_type === 'reduced') {
+        const reduction = parseFloat(a.round2_base_price_reduction) || 0;
+        newBasePrice = Math.floor(item.base_price * (1 - reduction / 100));
+        newBasePrice = Math.max(newBasePrice, 1); // floor at 1
+      } else if (a.round2_base_price_type === 'custom') {
+        // custom: use the reduction value as a fixed override
+        newBasePrice = parseInt(a.round2_base_price_reduction) || item.base_price;
+      }
+      // 'original' → keep as-is
+
+      // Update player base price for round 2 (store adjusted price on item)
+      const inserted = await client.query(
+        `INSERT INTO auction_items (auction_id, player_id, round_number, sequence_order, status)
+         VALUES ($1, $2, 2, $3, 'pending')
+         ON CONFLICT (auction_id, player_id, round_number) DO UPDATE
+           SET status = 'pending', sequence_order = $3
+         RETURNING id`,
+        [id, item.player_id, seq]
+      );
+
+      // Store adjusted base price by updating the player temporarily
+      // We update players.base_price here for round 2 reduced pricing
+      if (a.round2_base_price_type !== 'original') {
+        await client.query(
+          `UPDATE players SET base_price = $1 WHERE id = $2`,
+          [newBasePrice, item.player_id]
+        );
+      }
+
+      // Reset player status to available
+      await client.query(
+        `UPDATE players SET status = 'available' WHERE id = $1`,
+        [item.player_id]
+      );
+
+      round2Items.push(inserted.rows[0]);
+    }
+
+    // Advance auction to round 2 live
+    await client.query(
+      `UPDATE auctions SET status = 'round2_live', current_round = 2, updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+
+    await auditService.log({
+      auctionId: id, userId: req.user.id, action: 'round2_started',
+      entityType: 'auction', entityId: id,
+      details: { playerCount: round2Items.length },
+      ipAddress: req.ip,
+    });
 
     const io = req.app.get('io');
-    if (io) io.to(`auction:${id}`).emit('auction:ended', { auctionId: id });
+    if (io) {
+      io.to(`auction:${id}`).emit('auction:round2_started', {
+        auctionId: id,
+        playerCount: round2Items.length,
+      });
+    }
 
-    return sendSuccess(res, {}, 'Auction ended');
+    return sendSuccess(res, { playerCount: round2Items.length }, `Round 2 started with ${round2Items.length} unsold players`);
   } catch (err) {
-    return sendError(res, 'Failed to end auction', 500);
+    await client.query('ROLLBACK');
+    console.error('startRound2 error:', err);
+    return sendError(res, 'Failed to start Round 2', 500);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Start Round 3.
+ * Same pattern as Round 2 but for unsold players from round 2.
+ */
+const startRound3 = async (req, res) => {
+  const client = await getClient();
+  try {
+    const { id } = req.params;
+    const auction = await canManageAuction(id, req.user);
+    if (!auction) return sendError(res, 'Auction not found', 404);
+
+    const auctionData = await query(
+      `SELECT status, enable_round3, round3_base_price_type, round3_base_price_reduction
+       FROM auctions WHERE id = $1`,
+      [id]
+    );
+    const a = auctionData.rows[0];
+
+    if (a.status !== 'round2_complete') {
+      return sendError(res, 'Round 2 must be completed before starting Round 3', 400);
+    }
+    if (!a.enable_round3) {
+      return sendError(res, 'Round 3 is not enabled for this auction', 400);
+    }
+
+    const unsoldItems = await query(
+      `SELECT ai.player_id, p.base_price
+       FROM auction_items ai
+       JOIN players p ON ai.player_id = p.id
+       WHERE ai.auction_id = $1 AND ai.round_number = 2 AND ai.status = 'unsold'
+       ORDER BY ai.sequence_order ASC`,
+      [id]
+    );
+
+    if (!unsoldItems.rows.length) {
+      return sendError(res, 'No unsold players from Round 2', 400);
+    }
+
+    await client.query('BEGIN');
+
+    let seq = 0;
+    const round3Items = [];
+    for (const item of unsoldItems.rows) {
+      seq++;
+      let newBasePrice = item.base_price;
+
+      if (a.round3_base_price_type === 'reduced') {
+        const reduction = parseFloat(a.round3_base_price_reduction) || 0;
+        newBasePrice = Math.floor(item.base_price * (1 - reduction / 100));
+        newBasePrice = Math.max(newBasePrice, 1);
+      } else if (a.round3_base_price_type === 'custom') {
+        newBasePrice = parseInt(a.round3_base_price_reduction) || item.base_price;
+      }
+
+      const inserted = await client.query(
+        `INSERT INTO auction_items (auction_id, player_id, round_number, sequence_order, status)
+         VALUES ($1, $2, 3, $3, 'pending')
+         ON CONFLICT (auction_id, player_id, round_number) DO UPDATE
+           SET status = 'pending', sequence_order = $3
+         RETURNING id`,
+        [id, item.player_id, seq]
+      );
+
+      if (a.round3_base_price_type !== 'original') {
+        await client.query(
+          `UPDATE players SET base_price = $1 WHERE id = $2`,
+          [newBasePrice, item.player_id]
+        );
+      }
+
+      await client.query(
+        `UPDATE players SET status = 'available' WHERE id = $1`,
+        [item.player_id]
+      );
+
+      round3Items.push(inserted.rows[0]);
+    }
+
+    await client.query(
+      `UPDATE auctions SET status = 'round3_live', current_round = 3, updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+
+    await auditService.log({
+      auctionId: id, userId: req.user.id, action: 'round3_started',
+      entityType: 'auction', entityId: id,
+      details: { playerCount: round3Items.length },
+      ipAddress: req.ip,
+    });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`auction:${id}`).emit('auction:round3_started', {
+        auctionId: id,
+        playerCount: round3Items.length,
+      });
+    }
+
+    return sendSuccess(res, { playerCount: round3Items.length }, `Round 3 started with ${round3Items.length} unsold players`);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('startRound3 error:', err);
+    return sendError(res, 'Failed to start Round 3', 500);
+  } finally {
+    client.release();
   }
 };
 
@@ -511,10 +765,6 @@ const getEligibleUsers = async (req, res) => {
   }
 };
 
-/**
- * NEW: Get the current user's participation details for an auction
- * Returns their team assignment so the frontend knows which team they bid for
- */
 const getMyParticipation = async (req, res) => {
   try {
     const { id } = req.params;
@@ -558,5 +808,6 @@ module.exports = {
   createAuction, getAuctions, getAuction, updateAuction,
   startAuction, pauseAuction, resumeAuction, nextPlayer,
   getAuctionState, getAuctionItems, addParticipant, endAuction,
+  startRound2, startRound3,
   getEligibleUsers, getMyParticipation,
 };
