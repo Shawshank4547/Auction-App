@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Pause, Play, SkipForward, ArrowLeft, Flag, X, List } from 'lucide-react';
+import { Pause, Play, SkipForward, ArrowLeft, Flag, X, List, Trophy, CheckCircle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
@@ -18,6 +18,7 @@ import TeamBudgetBar from '../components/team/TeamBudgetBar';
 import Button from '../components/shared/Button';
 import Spinner from '../components/shared/Spinner';
 import Badge from '../components/shared/Badge';
+import { formatCurrency, shortCurrency } from '../utils/format';
 
 const LiveAuctionPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -25,7 +26,7 @@ const LiveAuctionPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     currentAuction, teams, liveItem, timeRemaining, auctionItems,
-    isPaused, activeTieBreak, auctionEnded, lastSold, reset,
+    isPaused, activeTieBreak, auctionEnded, lastSold, soldPlayers, reset,
     setCurrentAuction, setTeams, setLiveItem, setTimeRemaining,
     setAuctionItems, setIsPaused, setLastSold,
   } = useAuctionStore();
@@ -208,7 +209,7 @@ const LiveAuctionPage: React.FC = () => {
                     <p className="text-sm font-medium text-white truncate">{item.player_name}</p>
                     <p className="text-xs text-gray-400 truncate">
                       {item.category ? `${item.category}` : ''}
-                      {item.base_price ? ` · Base: ₹${(item.base_price / 100000).toFixed(1)}L` : ''}
+                      {item.base_price ? ` · Base: ₹${(Number(item.base_price) / 100000).toFixed(1)}L` : ''}
                     </p>
                   </div>
                   <Button size="sm" variant="primary" loading={actionLoading}
@@ -250,11 +251,16 @@ const LiveAuctionPage: React.FC = () => {
 
       <div className="p-4 max-w-7xl mx-auto">
         {auctionIsOver ? (
-          <div className="text-center py-20 bg-gray-900 rounded-xl border border-gray-800">
-            <div className="text-5xl mb-4">🏁</div>
-            <h2 className="text-2xl font-bold text-white mb-2">Auction Completed</h2>
-            <p className="text-gray-400 mb-6">All bidding has ended.</p>
-            <Button onClick={() => navigate(`/auctions/${id}`)}>View Results</Button>
+          <div className="space-y-6">
+            <div className="text-center py-12 bg-gray-900 rounded-xl border border-gray-800">
+              <div className="text-5xl mb-4">🏁</div>
+              <h2 className="text-2xl font-bold text-white mb-2">Auction Completed</h2>
+              <p className="text-gray-400 mb-6">All bidding has ended.</p>
+              <Button onClick={() => navigate(`/auctions/${id}`)}>View Results</Button>
+            </div>
+            {soldPlayers.length > 0 && (
+              <SoldPlayersList soldPlayers={soldPlayers} currency={currentAuction.currency} myTeamId={myTeam?.id} />
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -262,7 +268,7 @@ const LiveAuctionPage: React.FC = () => {
             {/* Left: Player + Timer */}
             <div className="lg:col-span-2 space-y-4">
 
-              {/* FIX: show sold summary when liveItem is null but lastSold exists */}
+              {/* Sold summary banner */}
               {!liveItem && lastSold && (
                 <SoldSummary
                   playerName={lastSold.playerName}
@@ -309,28 +315,39 @@ const LiveAuctionPage: React.FC = () => {
                   <BidFeed currency={currentAuction.currency} />
                 </>
               ) : (
-                /* No live item and no sold summary — waiting state */
-                !lastSold && (
-                  <div className="bg-gray-800 rounded-xl p-12 text-center">
-                    <div className="text-4xl mb-3">🏏</div>
-                    <h2 className="text-xl font-semibold text-white mb-1">Waiting for next player…</h2>
-                    <p className="text-gray-500 text-sm mb-4">
-                      {pendingItems.length > 0
-                        ? `${pendingItems.length} player${pendingItems.length > 1 ? 's' : ''} remaining in queue`
-                        : 'No more players in queue'}
-                    </p>
-                    {isOrganizer && pendingItems.length > 0 && (
-                      <Button variant="primary" onClick={() => setShowQueue(true)}>
-                        <List size={15} className="mr-2" /> Open Queue to Introduce Players
-                      </Button>
-                    )}
-                    {isOrganizer && pendingItems.length === 0 && (
-                      <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
-                        <Flag size={14} className="mr-2" /> End Auction
-                      </Button>
-                    )}
-                  </div>
-                )
+                /* Waiting state — no live player */
+                <div className="space-y-4">
+                  {!lastSold && (
+                    <div className="bg-gray-800 rounded-xl p-8 text-center">
+                      <div className="text-4xl mb-3">🏏</div>
+                      <h2 className="text-xl font-semibold text-white mb-1">Waiting for next player…</h2>
+                      <p className="text-gray-500 text-sm mb-4">
+                        {pendingItems.length > 0
+                          ? `${pendingItems.length} player${pendingItems.length > 1 ? 's' : ''} remaining in queue`
+                          : 'No more players in queue'}
+                      </p>
+                      {isOrganizer && pendingItems.length > 0 && (
+                        <Button variant="primary" onClick={() => setShowQueue(true)}>
+                          <List size={15} className="mr-2" /> Open Queue to Introduce Players
+                        </Button>
+                      )}
+                      {isOrganizer && pendingItems.length === 0 && (
+                        <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
+                          <Flag size={14} className="mr-2" /> End Auction
+                        </Button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Sold players history — visible to ALL roles */}
+                  {soldPlayers.length > 0 && (
+                    <SoldPlayersList
+                      soldPlayers={soldPlayers}
+                      currency={currentAuction.currency}
+                      myTeamId={myTeam?.id}
+                    />
+                  )}
+                </div>
               )}
             </div>
 
@@ -341,7 +358,7 @@ const LiveAuctionPage: React.FC = () => {
                 <div className="space-y-3">
                   {teams
                     .slice()
-                    .sort((a, b) => b.remaining_budget - a.remaining_budget)
+                    .sort((a, b) => Number(b.remaining_budget) - Number(a.remaining_budget))
                     .map((t) => (
                       <TeamBudgetBar key={t.id} team={t} currency={currentAuction.currency} compact />
                     ))}
@@ -351,6 +368,111 @@ const LiveAuctionPage: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// ── Sold Players List component ──────────────────────────────────────────────
+
+interface SoldPlayersListProps {
+  soldPlayers: import('../store/auctionStore').SoldPlayerEntry[];
+  currency: string;
+  myTeamId?: string | null;
+}
+
+const SoldPlayersList: React.FC<SoldPlayersListProps> = ({ soldPlayers, currency, myTeamId }) => {
+  const soldCount = soldPlayers.filter(p => p.teamId).length;
+  const unsoldCount = soldPlayers.filter(p => !p.teamId).length;
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+        <h3 className="font-semibold text-white flex items-center gap-2">
+          <Trophy size={16} className="text-yellow-400" />
+          Players Sold This Session
+        </h3>
+        <div className="flex items-center gap-3 text-xs text-gray-400">
+          {soldCount > 0 && (
+            <span className="bg-green-900/40 border border-green-800/50 text-green-400 px-2 py-0.5 rounded-full">
+              {soldCount} sold
+            </span>
+          )}
+          {unsoldCount > 0 && (
+            <span className="bg-gray-800 border border-gray-700 text-gray-400 px-2 py-0.5 rounded-full">
+              {unsoldCount} unsold
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="divide-y divide-gray-800/60 max-h-96 overflow-y-auto">
+        {soldPlayers.map((entry, idx) => {
+          const isSold = !!entry.teamId;
+          const isMyTeam = entry.teamId === myTeamId;
+
+          return (
+            <div
+              key={entry.auctionItemId}
+              className={`flex items-center gap-3 px-4 py-3 transition-colors ${
+                isMyTeam ? 'bg-yellow-900/10' : ''
+              }`}
+            >
+              {/* Rank / index */}
+              <span className="text-xs text-gray-600 w-5 shrink-0 text-right">
+                {soldPlayers.length - idx}
+              </span>
+
+              {/* Photo */}
+              {entry.photoUrl ? (
+                <img
+                  src={entry.photoUrl}
+                  alt={entry.playerName}
+                  className="h-9 w-9 rounded-lg object-cover object-center shrink-0 border border-gray-700"
+                />
+              ) : (
+                <div className="h-9 w-9 rounded-lg bg-gray-800 border border-gray-700 flex items-center justify-center text-xs text-gray-500 font-bold shrink-0">
+                  {entry.playerName.charAt(0)}
+                </div>
+              )}
+
+              {/* Name + team */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{entry.playerName}</p>
+                {isSold ? (
+                  <p className="text-xs text-gray-400 truncate">
+                    <span className={isMyTeam ? 'text-yellow-400 font-semibold' : 'text-gray-300'}>
+                      {entry.teamName}
+                    </span>
+                    {isMyTeam && ' 🏆'}
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-600 italic">Unsold</p>
+                )}
+              </div>
+
+              {/* Price / status */}
+              <div className="shrink-0 text-right">
+                {isSold ? (
+                  <span className={`text-sm font-bold ${isMyTeam ? 'text-yellow-400' : 'text-green-400'}`}>
+                    {shortCurrency(entry.finalPrice, currency)}
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">
+                    Unsold
+                  </span>
+                )}
+              </div>
+
+              {/* Sold indicator */}
+              {isSold && (
+                <CheckCircle size={14} className={`shrink-0 ${isMyTeam ? 'text-yellow-400' : 'text-green-500'}`} />
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

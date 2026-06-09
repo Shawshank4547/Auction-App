@@ -10,7 +10,6 @@ interface TieBreakState {
   submitted: boolean;
 }
 
-// FIX: track the last sold player so the UI can show a summary card
 export interface LastSoldInfo {
   auctionItemId: string;
   playerId: string;
@@ -19,6 +18,18 @@ export interface LastSoldInfo {
   teamId: string;
   teamName: string;
   finalPrice: number;
+}
+
+// NEW: persistent list of all sold/unsold players this session
+export interface SoldPlayerEntry {
+  auctionItemId: string;
+  playerId: string;
+  playerName: string;
+  photoUrl: string | null;
+  teamId: string;       // empty string = unsold
+  teamName: string;     // empty string = unsold
+  finalPrice: number;   // 0 = unsold
+  soldAt: string;       // ISO timestamp
 }
 
 interface AuctionStore {
@@ -32,7 +43,8 @@ interface AuctionStore {
   activeTieBreak: TieBreakState | null;
   isPaused: boolean;
   auctionEnded: boolean;
-  lastSold: LastSoldInfo | null;   // NEW
+  lastSold: LastSoldInfo | null;
+  soldPlayers: SoldPlayerEntry[];   // NEW: full history
 
   setCurrentAuction: (auction: Auction) => void;
   setTeams: (teams: Team[]) => void;
@@ -45,7 +57,8 @@ interface AuctionStore {
   setActiveTieBreak: (tb: TieBreakState | null) => void;
   setIsPaused: (v: boolean) => void;
   setAuctionEnded: (v: boolean) => void;
-  setLastSold: (info: LastSoldInfo | null) => void;  // NEW
+  setLastSold: (info: LastSoldInfo | null) => void;
+  addSoldPlayer: (entry: SoldPlayerEntry) => void;   // NEW
   updateTeamBudget: (teamId: string, finalPrice: number) => void;
   updateLiveItemPrice: (price: number, teamId: string, teamName: string, timeRemaining?: number) => void;
   markAuctionItemSold: (auctionItemId: string) => void;
@@ -64,6 +77,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
   isPaused: false,
   auctionEnded: false,
   lastSold: null,
+  soldPlayers: [],
 
   setCurrentAuction: (auction) => set({ currentAuction: auction }),
   setTeams: (teams) => set({ teams }),
@@ -90,6 +104,11 @@ const useAuctionStore = create<AuctionStore>((set) => ({
   setIsPaused: (isPaused) => set({ isPaused }),
   setAuctionEnded: (auctionEnded) => set({ auctionEnded }),
   setLastSold: (lastSold) => set({ lastSold }),
+
+  addSoldPlayer: (entry) =>
+    set((state) => ({
+      soldPlayers: [entry, ...state.soldPlayers],
+    })),
 
   updateTeamBudget: (teamId, finalPrice) =>
     set((state) => ({
@@ -126,6 +145,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
       isPaused: false,
       auctionEnded: false,
       lastSold: null,
+      soldPlayers: [],
     }),
 }));
 

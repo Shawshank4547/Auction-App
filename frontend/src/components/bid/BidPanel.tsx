@@ -52,33 +52,30 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
   const [loading, setLoading] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
 
-  const currentPrice = liveItem.current_price ?? 0;
+  // FIX: Coerce all numeric fields to Number — pg driver returns BIGINT as strings
+  const currentPrice = Number(liveItem.current_price ?? 0);
+  const bidIncrement = Number(auction.bid_increment);
+  const remainingBudget = myTeam ? Number(myTeam.remaining_budget) : 0;
+  const playerBasePrice = Number(liveItem.base_price ?? bidIncrement);
+  const bidCapAmount = auction.bid_cap_enabled && auction.bid_cap_amount
+    ? Number(auction.bid_cap_amount)
+    : null;
 
-  // FIX: minBid should ONLY use bid_increment for subsequent bids,
-  // and ONLY the player's base_price for the first bid — never auction.starting_bid
-  // in the Math.max, since that can be much larger and block valid bids.
-  const playerBasePrice = liveItem.base_price ?? auction.bid_increment;
   const minBid = currentPrice > 0
-    ? currentPrice + auction.bid_increment
-    : playerBasePrice;  // first bid: just need to meet the player's base price
+    ? currentPrice + bidIncrement
+    : playerBasePrice; // first bid: meet the player's base price
 
   const isLeader = myTeam?.id === liveItem.current_leader_team_id;
-  const hasEnoughBudget = myTeam ? myTeam.remaining_budget >= minBid : false;
+  const hasEnoughBudget = myTeam ? remainingBudget >= minBid : false;
   const canBid = !disabled && myTeam && !isLeader && hasEnoughBudget;
 
-  // FIX: clear, accurate reason — check actual minBid, not basePrice separately
   const insufficientFundsReason: string | null = (() => {
     if (!myTeam || isLeader || disabled || hasEnoughBudget) return null;
-    return `Need ${formatCurrency(minBid, auction.currency)} to bid — you have ${formatCurrency(myTeam.remaining_budget, auction.currency)}`;
+    return `Need ${formatCurrency(minBid, auction.currency)} to bid — you have ${formatCurrency(remainingBudget, auction.currency)}`;
   })();
 
   const quickAmounts = myTeam
-    ? getQuickAmounts(
-        minBid,
-        auction.bid_increment,
-        myTeam.remaining_budget,
-        auction.bid_cap_enabled ? auction.bid_cap_amount : null
-      )
+    ? getQuickAmounts(minBid, bidIncrement, remainingBudget, bidCapAmount)
     : [];
 
   const handleBid = async (amount: number) => {
@@ -104,8 +101,8 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
       toast.error(`Minimum bid is ${formatCurrency(minBid, auction.currency)}`);
       return;
     }
-    if (myTeam && amount > myTeam.remaining_budget) {
-      toast.error(`Amount exceeds your budget of ${formatCurrency(myTeam.remaining_budget, auction.currency)}`);
+    if (myTeam && amount > remainingBudget) {
+      toast.error(`Amount exceeds your budget of ${formatCurrency(remainingBudget, auction.currency)}`);
       return;
     }
     await handleBid(amount);
@@ -132,12 +129,12 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
           <Wallet size={13} className="text-green-400 shrink-0" />
           <span className="text-xs text-gray-400 shrink-0">Budget</span>
           <span className="text-sm font-bold text-green-400 truncate">
-            {formatCurrency(myTeam.remaining_budget, auction.currency)}
+            {formatCurrency(remainingBudget, auction.currency)}
           </span>
         </div>
       </div>
 
-      {/* Minimum bid info — always visible so users know what they need */}
+      {/* Minimum bid info */}
       <div className="bg-gray-700/40 rounded-lg px-3 py-2 flex items-center justify-between text-xs">
         <span className="text-gray-400">Minimum next bid</span>
         <span className="text-white font-semibold">{formatCurrency(minBid, auction.currency)}</span>
@@ -201,7 +198,7 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
 
       {auction.bid_cap_enabled && auction.bid_cap_amount && (
         <p className="text-xs text-gray-500 text-center">
-          Cap: {formatCurrency(auction.bid_cap_amount, auction.currency)} — tie-break on cap
+          Cap: {formatCurrency(Number(auction.bid_cap_amount), auction.currency)} — tie-break on cap
         </p>
       )}
     </div>

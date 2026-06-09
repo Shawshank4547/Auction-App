@@ -21,7 +21,8 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     setActiveTieBreak,
     setIsPaused,
     setAuctionEnded,
-    setLastSold,        // FIX: use new action
+    setLastSold,
+    addSoldPlayer,
     updateTeamBudget,
     markAuctionItemSold,
   } = useAuctionStore();
@@ -82,7 +83,6 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       roundNumber: number;
       sequenceOrder: number;
     }>('player:introduced', (data) => {
-      // FIX: clear lastSold when a new player comes up
       setLastSold(null);
       setLiveItem({
         id: data.auctionItemId,
@@ -118,17 +118,22 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       teamName: string;
       finalPrice: number;
     }>('player:sold', (data) => {
-      // FIX: save sold info BEFORE clearing liveItem so we still have photo_url
       const currentLiveItem = useAuctionStore.getState().liveItem;
-      setLastSold({
+      const photoUrl = currentLiveItem?.photo_url ?? null;
+
+      const soldEntry = {
         auctionItemId: data.auctionItemId,
         playerId: data.playerId,
         playerName: data.playerName,
-        photoUrl: currentLiveItem?.photo_url ?? null,
+        photoUrl,
         teamId: data.teamId,
         teamName: data.teamName,
         finalPrice: data.finalPrice,
-      });
+        soldAt: new Date().toISOString(),
+      };
+
+      setLastSold(soldEntry);
+      addSoldPlayer(soldEntry);   // NEW: add to persistent list
 
       setLiveItem(null);
       setTimeRemaining(null);
@@ -147,16 +152,22 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     const offUnsold = socketService.on<{ auctionItemId: string; playerName: string; playerId: string }>(
       'player:unsold',
       (data) => {
-        // FIX: show unsold state too
-        setLastSold({
+        const photoUrl = useAuctionStore.getState().liveItem?.photo_url ?? null;
+
+        const unsoldEntry = {
           auctionItemId: data.auctionItemId,
           playerId: data.playerId,
           playerName: data.playerName,
-          photoUrl: useAuctionStore.getState().liveItem?.photo_url ?? null,
+          photoUrl,
           teamId: '',
           teamName: '',
           finalPrice: 0,
-        });
+          soldAt: new Date().toISOString(),
+        };
+
+        setLastSold(unsoldEntry);
+        addSoldPlayer(unsoldEntry);  // NEW: add to persistent list
+
         setLiveItem(null);
         setTimeRemaining(null);
         markAuctionItemSold(data.auctionItemId);
