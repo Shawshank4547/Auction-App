@@ -33,14 +33,12 @@ const AuctionManagePage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>((searchParams.get('tab') as Tab) || 'settings');
 
-  // Team form
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [editingTeam, setEditingTeam] = useState<Team | null>(null);
   const [teamForm, setTeamForm] = useState({ name: '', totalBudget: '', maxPlayers: '25' });
   const [teamOwner, setTeamOwner] = useState<TeamFormOwner | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
 
-  // Player form
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
   const [playerForm, setPlayerForm] = useState({ name: '', category: '', role: '', basePrice: '', description: '' });
@@ -60,8 +58,10 @@ const AuctionManagePage: React.FC = () => {
     }).catch(() => toast.error('Failed to load')).finally(() => setLoading(false));
   }, [id]);
 
-  // FIX: canEditAuction gates ALL mutations (add + delete + edit), not just delete
-  const canEditAuction = auction?.status === 'draft' || auction?.status === 'scheduled';
+  // FIX: allow edits when draft, scheduled, OR any live status —
+  // only lock down when completed or archived.
+  const LOCKED_STATUSES = ['completed', 'archived'];
+  const canEditAuction = auction ? !LOCKED_STATUSES.includes(auction.status) : false;
 
   const openAddTeam = () => {
     setEditingTeam(null);
@@ -131,7 +131,7 @@ const AuctionManagePage: React.FC = () => {
       setTeams((prev) => prev.filter((t) => t.id !== teamId));
       toast.success('Team deleted');
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Cannot delete — auction may already be live');
+      toast.error(err.response?.data?.message || 'Cannot delete team');
     }
   };
 
@@ -158,16 +158,9 @@ const AuctionManagePage: React.FC = () => {
   const handleSavePlayer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id) return;
-
-    if (!playerForm.name.trim()) {
-      toast.error('Player name is required');
-      return;
-    }
+    if (!playerForm.name.trim()) { toast.error('Player name is required'); return; }
     const basePriceVal = parseInt(playerForm.basePrice);
-    if (isNaN(basePriceVal) || basePriceVal < 0) {
-      toast.error('Please enter a valid base price');
-      return;
-    }
+    if (isNaN(basePriceVal) || basePriceVal < 0) { toast.error('Please enter a valid base price'); return; }
 
     setPlayerLoading(true);
     try {
@@ -228,6 +221,8 @@ const AuctionManagePage: React.FC = () => {
   if (loading) return <Spinner className="py-20" />;
   if (!auction) return <div className="text-center py-20 text-gray-400">Auction not found</div>;
 
+  const isLocked = LOCKED_STATUSES.includes(auction.status);
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
@@ -243,13 +238,10 @@ const AuctionManagePage: React.FC = () => {
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-900 p-1 rounded-xl border border-gray-800 w-fit">
         {([['settings', Settings], ['teams', Users], ['players', List]] as [Tab, any][]).map(([t, Icon]) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
+          <button key={t} onClick={() => setTab(t)}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${
               tab === t ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
-            }`}
-          >
+            }`}>
             <Icon size={14} />{t}
           </button>
         ))}
@@ -260,7 +252,6 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Teams ({teams.length})</h2>
-            {/* FIX: only show Add Team button when auction is editable */}
             {canEditAuction && (
               <Button size="sm" onClick={openAddTeam}>
                 <Plus size={14} className="mr-1" /> Add Team
@@ -268,10 +259,9 @@ const AuctionManagePage: React.FC = () => {
             )}
           </div>
 
-          {/* FIX: show read-only notice when auction is live/completed */}
-          {!canEditAuction && (
+          {isLocked && (
             <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
-              Auction is {auction.status.replace(/_/g, ' ')} — teams cannot be added or deleted. You can still reassign owners.
+              Auction is {auction.status} — teams are read-only.
             </p>
           )}
 
@@ -287,8 +277,7 @@ const AuctionManagePage: React.FC = () => {
                 <p className="text-xs text-gray-500">
                   {t.owner_name
                     ? <span className="text-blue-400">{t.owner_name}</span>
-                    : <span className="italic">No owner assigned</span>
-                  }
+                    : <span className="italic">No owner assigned</span>}
                   {' · '}{t.squad_size} players
                 </p>
               </div>
@@ -296,20 +285,17 @@ const AuctionManagePage: React.FC = () => {
                 <p className="text-green-400 font-semibold">{shortCurrency(t.remaining_budget)}</p>
                 <p className="text-xs text-gray-500">of {shortCurrency(t.total_budget)}</p>
               </div>
-              <button
-                onClick={() => openEditTeam(t)}
-                className="p-2 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
-                title="Edit team"
-              >
-                <Edit2 size={15} />
-              </button>
-              {/* FIX: delete only when editable */}
               {canEditAuction && (
-                <button
-                  onClick={() => handleDeleteTeam(t.id)}
+                <button onClick={() => openEditTeam(t)}
+                  className="p-2 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                  title="Edit team">
+                  <Edit2 size={15} />
+                </button>
+              )}
+              {canEditAuction && (
+                <button onClick={() => handleDeleteTeam(t.id)}
                   className="p-2 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
-                  title="Delete team"
-                >
+                  title="Delete team">
                   <Trash2 size={16} />
                 </button>
               )}
@@ -323,7 +309,6 @@ const AuctionManagePage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-white">Players ({players.length})</h2>
-            {/* FIX: only show Add Player button when auction is editable */}
             {canEditAuction && (
               <Button size="sm" onClick={openAddPlayer}>
                 <Plus size={14} className="mr-1" /> Add Player
@@ -331,10 +316,9 @@ const AuctionManagePage: React.FC = () => {
             )}
           </div>
 
-          {/* FIX: show read-only notice when live/completed */}
-          {!canEditAuction && (
+          {isLocked && (
             <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
-              Auction is {auction.status.replace(/_/g, ' ')} — new players cannot be added.
+              Auction is {auction.status} — players are read-only.
             </p>
           )}
 
@@ -355,30 +339,32 @@ const AuctionManagePage: React.FC = () => {
                 )}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-white">{p.name}</p>
-                  <p className="text-xs text-gray-500">{p.category || '—'} · {p.role || '—'} · Base: {p.base_price ? shortCurrency(p.base_price) : '—'}</p>
+                  <p className="text-xs text-gray-500">
+                    {p.category || '—'} · {p.role || '—'} · Base: {p.base_price ? shortCurrency(p.base_price) : '—'}
+                  </p>
                 </div>
                 <Badge variant={p.status === 'sold' ? 'success' : p.status === 'available' ? 'info' : 'default'} size="sm">
                   {p.status}
                 </Badge>
-                {p.status === 'draft' && canEditAuction && (
-                  <Button size="sm" variant="ghost" onClick={() => handleSchedulePlayer(p.id)}>Schedule</Button>
+                {/* Schedule: only for draft players when auction is not locked */}
+                {canEditAuction && p.status === 'draft' && (
+                  <Button size="sm" variant="ghost" onClick={() => handleSchedulePlayer(p.id)}>
+                    Schedule
+                  </Button>
                 )}
-                {['draft', 'available', 'unsold'].includes(p.status) && (
-                  <button
-                    onClick={() => openEditPlayer(p)}
+                {/* Edit: allowed for non-live, non-sold players when not locked */}
+                {canEditAuction && ['draft', 'available', 'unsold'].includes(p.status) && (
+                  <button onClick={() => openEditPlayer(p)}
                     className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
-                    title="Edit player"
-                  >
+                    title="Edit player">
                     <Edit2 size={14} />
                   </button>
                 )}
-                {/* FIX: delete only when editable */}
-                {canEditAuction && (p.status === 'draft' || p.status === 'available') && (
-                  <button
-                    onClick={() => handleDeletePlayer(p.id)}
+                {/* Delete: draft or available players only, when not locked */}
+                {canEditAuction && ['draft', 'available'].includes(p.status) && (
+                  <button onClick={() => handleDeletePlayer(p.id)}
                     className="p-1.5 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
-                    title="Delete player"
-                  >
+                    title="Delete player">
                     <Trash2 size={14} />
                   </button>
                 )}
@@ -392,9 +378,9 @@ const AuctionManagePage: React.FC = () => {
       {tab === 'settings' && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-3">
           <h2 className="font-semibold text-white">Auction Configuration</h2>
-          {!canEditAuction && (
+          {isLocked && (
             <p className="text-yellow-400 text-sm bg-yellow-900/20 border border-yellow-800/50 rounded-lg px-3 py-2">
-              This auction is live or completed. Settings are read-only.
+              This auction is {auction.status}. Settings are read-only.
             </p>
           )}
           <div className="grid grid-cols-2 gap-3 mt-4">
@@ -419,64 +405,33 @@ const AuctionManagePage: React.FC = () => {
         </div>
       )}
 
-      {/* Add / Edit Team Modal */}
-      <Modal
-        isOpen={showTeamModal}
-        onClose={() => setShowTeamModal(false)}
-        title={editingTeam ? 'Edit Team' : 'Add Team'}
-      >
+      {/* Team Modal */}
+      <Modal isOpen={showTeamModal} onClose={() => setShowTeamModal(false)}
+        title={editingTeam ? 'Edit Team' : 'Add Team'}>
         <form onSubmit={handleSaveTeam} className="space-y-4">
-          <Input
-            label="Team Name"
-            value={teamForm.name}
-            onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
-            required
-          />
-
+          <Input label="Team Name" value={teamForm.name}
+            onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required />
           {!editingTeam && (
-            <Input
-              label="Total Budget"
-              type="number"
-              value={teamForm.totalBudget}
+            <Input label="Total Budget" type="number" value={teamForm.totalBudget}
               onChange={(e) => setTeamForm({ ...teamForm, totalBudget: e.target.value })}
-              placeholder="e.g. 10000000"
-              required
-            />
+              placeholder="e.g. 10000000" required />
           )}
           {editingTeam && (
             <p className="text-xs text-gray-500 bg-gray-800 rounded-lg px-3 py-2">
-              Budget cannot be changed after team creation (current: {shortCurrency(editingTeam.total_budget)}).
+              Budget cannot be changed after creation (current: {shortCurrency(editingTeam.total_budget)}).
             </p>
           )}
-
-          <Input
-            label="Max Players"
-            type="number"
-            value={teamForm.maxPlayers}
-            onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })}
-          />
-
+          <Input label="Max Players" type="number" value={teamForm.maxPlayers}
+            onChange={(e) => setTeamForm({ ...teamForm, maxPlayers: e.target.value })} />
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-gray-300">
-              Team Owner / Manager
-              <span className="text-gray-500 font-normal ml-1">(optional)</span>
+              Team Owner / Manager <span className="text-gray-500 font-normal">(optional)</span>
             </label>
-            {id && (
-              <UserSearchPicker
-                auctionId={id}
-                value={teamOwner}
-                onChange={setTeamOwner}
-              />
-            )}
-            <p className="text-xs text-gray-500">
-              The assigned bidder can place bids for this team in the live auction.
-            </p>
+            {id && <UserSearchPicker auctionId={id} value={teamOwner} onChange={setTeamOwner} />}
+            <p className="text-xs text-gray-500">The assigned bidder can place bids for this team.</p>
           </div>
-
           <div className="flex gap-2 pt-2">
-            <Button type="button" variant="ghost" fullWidth onClick={() => setShowTeamModal(false)}>
-              Cancel
-            </Button>
+            <Button type="button" variant="ghost" fullWidth onClick={() => setShowTeamModal(false)}>Cancel</Button>
             <Button type="submit" fullWidth loading={teamLoading}>
               {editingTeam ? 'Save Changes' : 'Create Team'}
             </Button>
@@ -484,65 +439,35 @@ const AuctionManagePage: React.FC = () => {
         </form>
       </Modal>
 
-      {/* Add / Edit Player Modal */}
-      <Modal
-        isOpen={showPlayerModal}
-        onClose={() => setShowPlayerModal(false)}
-        title={editingPlayer ? 'Edit Player' : 'Add Player'}
-      >
+      {/* Player Modal */}
+      <Modal isOpen={showPlayerModal} onClose={() => setShowPlayerModal(false)}
+        title={editingPlayer ? 'Edit Player' : 'Add Player'}>
         <form onSubmit={handleSavePlayer} className="space-y-3">
-          <Input
-            label="Player Name *"
-            value={playerForm.name}
-            onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })}
-            required
-          />
+          <Input label="Player Name *" value={playerForm.name}
+            onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })} required />
           <div className="grid grid-cols-2 gap-3">
-            <Input
-              label="Category"
-              value={playerForm.category}
+            <Input label="Category" value={playerForm.category}
               onChange={(e) => setPlayerForm({ ...playerForm, category: e.target.value })}
-              placeholder="Batsman, Bowler…"
-            />
-            <Input
-              label="Role"
-              value={playerForm.role}
+              placeholder="Batsman, Bowler…" />
+            <Input label="Role" value={playerForm.role}
               onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })}
-              placeholder="Opening, Pace…"
-            />
+              placeholder="Opening, Pace…" />
           </div>
-          <Input
-            label="Base Price *"
-            type="number"
-            value={playerForm.basePrice}
+          <Input label="Base Price *" type="number" value={playerForm.basePrice}
             onChange={(e) => setPlayerForm({ ...playerForm, basePrice: e.target.value })}
-            placeholder="e.g. 500000"
-            required
-            min="0"
-          />
-          <Input
-            label="Description"
-            value={playerForm.description}
-            onChange={(e) => setPlayerForm({ ...playerForm, description: e.target.value })}
-          />
+            placeholder="e.g. 500000" required min="0" />
+          <Input label="Description" value={playerForm.description}
+            onChange={(e) => setPlayerForm({ ...playerForm, description: e.target.value })} />
           <div>
             <label className="text-sm font-medium text-gray-300 block mb-1">
               Photo {editingPlayer?.photo_url ? '(leave blank to keep existing)' : ''}
             </label>
-            <input
-              type="file"
-              accept="image/*"
+            <input type="file" accept="image/*"
               onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
-              className="w-full text-sm text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700"
-            />
-            {editingPlayer?.photo_url && !photoFile && (
-              <p className="text-xs text-gray-500 mt-1">Current photo will be kept.</p>
-            )}
+              className="w-full text-sm text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700" />
           </div>
           <div className="flex gap-2 pt-2">
-            <Button type="button" variant="ghost" fullWidth onClick={() => setShowPlayerModal(false)}>
-              Cancel
-            </Button>
+            <Button type="button" variant="ghost" fullWidth onClick={() => setShowPlayerModal(false)}>Cancel</Button>
             <Button type="submit" fullWidth loading={playerLoading}>
               {editingPlayer ? 'Save Changes' : 'Create Player'}
             </Button>

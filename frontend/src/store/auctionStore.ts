@@ -10,6 +10,17 @@ interface TieBreakState {
   submitted: boolean;
 }
 
+// FIX: track the last sold player so the UI can show a summary card
+export interface LastSoldInfo {
+  auctionItemId: string;
+  playerId: string;
+  playerName: string;
+  photoUrl: string | null;
+  teamId: string;
+  teamName: string;
+  finalPrice: number;
+}
+
 interface AuctionStore {
   currentAuction: Auction | null;
   teams: Team[];
@@ -21,6 +32,7 @@ interface AuctionStore {
   activeTieBreak: TieBreakState | null;
   isPaused: boolean;
   auctionEnded: boolean;
+  lastSold: LastSoldInfo | null;   // NEW
 
   setCurrentAuction: (auction: Auction) => void;
   setTeams: (teams: Team[]) => void;
@@ -33,6 +45,7 @@ interface AuctionStore {
   setActiveTieBreak: (tb: TieBreakState | null) => void;
   setIsPaused: (v: boolean) => void;
   setAuctionEnded: (v: boolean) => void;
+  setLastSold: (info: LastSoldInfo | null) => void;  // NEW
   updateTeamBudget: (teamId: string, finalPrice: number) => void;
   updateLiveItemPrice: (price: number, teamId: string, teamName: string, timeRemaining?: number) => void;
   markAuctionItemSold: (auctionItemId: string) => void;
@@ -50,6 +63,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
   activeTieBreak: null,
   isPaused: false,
   auctionEnded: false,
+  lastSold: null,
 
   setCurrentAuction: (auction) => set({ currentAuction: auction }),
   setTeams: (teams) => set({ teams }),
@@ -74,8 +88,8 @@ const useAuctionStore = create<AuctionStore>((set) => ({
 
   setActiveTieBreak: (activeTieBreak) => set({ activeTieBreak }),
   setIsPaused: (isPaused) => set({ isPaused }),
-  // FIX: expose setAuctionEnded so socket hook can set it
   setAuctionEnded: (auctionEnded) => set({ auctionEnded }),
+  setLastSold: (lastSold) => set({ lastSold }),
 
   updateTeamBudget: (teamId, finalPrice) =>
     set((state) => ({
@@ -111,6 +125,7 @@ const useAuctionStore = create<AuctionStore>((set) => ({
       activeTieBreak: null,
       isPaused: false,
       auctionEnded: false,
+      lastSold: null,
     }),
 }));
 

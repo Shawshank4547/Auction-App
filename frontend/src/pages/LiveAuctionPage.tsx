@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Pause, Play, SkipForward, ArrowLeft, ChevronRight, Flag, X, List } from 'lucide-react';
+import { Pause, Play, SkipForward, ArrowLeft, Flag, X, List } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
@@ -9,6 +9,7 @@ import { useAuctionSocket } from '../hooks/useAuctionSocket';
 import { Auction, AuctionItem, Team } from '../types';
 import AuctionTimer from '../components/auction/AuctionTimer';
 import LivePlayerCard from '../components/auction/LivePlayerCard';
+import SoldSummary from '../components/auction/SoldSummary';
 import BidPanel from '../components/bid/BidPanel';
 import TieBreakPanel from '../components/bid/TieBreakPanel';
 import BidFeed from '../components/auction/BidFeed';
@@ -24,8 +25,9 @@ const LiveAuctionPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     currentAuction, teams, liveItem, timeRemaining, auctionItems,
-    isPaused, activeTieBreak, auctionEnded, reset,
-    setCurrentAuction, setTeams, setLiveItem, setTimeRemaining, setAuctionItems, setIsPaused,
+    isPaused, activeTieBreak, auctionEnded, lastSold, reset,
+    setCurrentAuction, setTeams, setLiveItem, setTimeRemaining,
+    setAuctionItems, setIsPaused, setLastSold,
   } = useAuctionStore();
 
   const [loading, setLoading] = useState(true);
@@ -48,12 +50,7 @@ const LiveAuctionPage: React.FC = () => {
       setLiveItem(li);
       setTimeRemaining(tr);
       setAuctionItems(itemsRes.data.data);
-
-      if (li && li.paused_at) {
-        setIsPaused(true);
-      } else {
-        setIsPaused(false);
-      }
+      setIsPaused(!!(li && li.paused_at));
 
       if (user?.role === 'bidder' || user?.role === 'viewer') {
         try {
@@ -156,37 +153,23 @@ const LiveAuctionPage: React.FC = () => {
         </Badge>
         {isOrganizer && !auctionIsOver && (
           <div className="flex gap-2">
-            <Button
-              variant={isPaused ? 'success' : 'secondary'}
-              size="sm"
-              loading={actionLoading}
-              onClick={handlePause}
-            >
+            <Button variant={isPaused ? 'success' : 'secondary'} size="sm" loading={actionLoading} onClick={handlePause}>
               {isPaused ? <Play size={14} className="mr-1" /> : <Pause size={14} className="mr-1" />}
               {isPaused ? 'Resume' : 'Pause'}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowQueue(!showQueue)}
-              className={showQueue ? 'bg-gray-700 border-gray-500' : ''}
-            >
+            <Button variant="ghost" size="sm" onClick={() => setShowQueue(!showQueue)}
+              className={showQueue ? 'bg-gray-700 border-gray-500' : ''}>
               <List size={14} className="mr-1" />
               Queue ({pendingItems.length})
             </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => setShowEndConfirm(true)}
-            >
-              <Flag size={14} className="mr-1" />
-              End
+            <Button variant="danger" size="sm" onClick={() => setShowEndConfirm(true)}>
+              <Flag size={14} className="mr-1" /> End
             </Button>
           </div>
         )}
       </div>
 
-      {/* PAUSE OVERLAY BANNER — shown at bottom of page, not near the top buttons */}
+      {/* Pause banner */}
       {isPaused && !auctionIsOver && (
         <div className="sticky top-[57px] z-20 bg-yellow-900/80 border-b border-yellow-700 px-4 py-2 flex items-center justify-center gap-3 backdrop-blur-sm">
           <span className="text-lg">⏸️</span>
@@ -199,7 +182,7 @@ const LiveAuctionPage: React.FC = () => {
         </div>
       )}
 
-      {/* QUEUE PANEL — slide-in from right */}
+      {/* Queue panel */}
       {showQueue && isOrganizer && (
         <div className="fixed inset-y-0 right-0 z-40 w-80 bg-gray-900 border-l border-gray-700 shadow-2xl flex flex-col">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
@@ -214,9 +197,7 @@ const LiveAuctionPage: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {pendingItems.length === 0 ? (
-              <div className="text-center py-8 text-gray-500 text-sm">
-                No players in queue
-              </div>
+              <div className="text-center py-8 text-gray-500 text-sm">No players in queue</div>
             ) : (
               pendingItems.map((item) => (
                 <div key={item.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 flex items-center gap-3">
@@ -230,13 +211,8 @@ const LiveAuctionPage: React.FC = () => {
                       {item.base_price ? ` · Base: ₹${(item.base_price / 100000).toFixed(1)}L` : ''}
                     </p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={actionLoading}
-                    onClick={() => handleNextPlayer(item.id)}
-                    disabled={!!liveItem}
-                  >
+                  <Button size="sm" variant="primary" loading={actionLoading}
+                    onClick={() => handleNextPlayer(item.id)} disabled={!!liveItem}>
                     <SkipForward size={13} className="mr-1" />
                     {liveItem ? 'Wait' : 'Go'}
                   </Button>
@@ -247,21 +223,20 @@ const LiveAuctionPage: React.FC = () => {
           {liveItem && (
             <div className="px-3 py-2 border-t border-gray-800 bg-yellow-900/20">
               <p className="text-xs text-yellow-400 text-center">
-                Player currently being auctioned. Wait for them to be sold/unsold.
+                Player currently being auctioned. Wait for them to finish.
               </p>
             </div>
           )}
         </div>
       )}
 
-      {/* End Auction confirmation */}
+      {/* End confirm */}
       {showEndConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
           <div className="bg-gray-900 border border-red-800 rounded-xl p-6 max-w-sm w-full space-y-4">
             <h2 className="text-lg font-bold text-white">End Auction?</h2>
             <p className="text-gray-400 text-sm">
-              This will permanently end the auction. Any player currently being bid on will be marked unsold.
-              This cannot be undone.
+              This will permanently end the auction. Any player currently being bid on will be marked unsold. This cannot be undone.
             </p>
             <div className="flex gap-3">
               <Button variant="ghost" fullWidth onClick={() => setShowEndConfirm(false)}>Cancel</Button>
@@ -286,6 +261,20 @@ const LiveAuctionPage: React.FC = () => {
 
             {/* Left: Player + Timer */}
             <div className="lg:col-span-2 space-y-4">
+
+              {/* FIX: show sold summary when liveItem is null but lastSold exists */}
+              {!liveItem && lastSold && (
+                <SoldSummary
+                  playerName={lastSold.playerName}
+                  teamName={lastSold.teamName}
+                  finalPrice={lastSold.finalPrice}
+                  currency={currentAuction.currency}
+                  photoUrl={lastSold.photoUrl}
+                  isMyTeam={lastSold.teamId === myTeam?.id}
+                  onDismiss={() => setLastSold(null)}
+                />
+              )}
+
               {liveItem ? (
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -320,25 +309,28 @@ const LiveAuctionPage: React.FC = () => {
                   <BidFeed currency={currentAuction.currency} />
                 </>
               ) : (
-                <div className="bg-gray-800 rounded-xl p-12 text-center">
-                  <div className="text-4xl mb-3">🏏</div>
-                  <h2 className="text-xl font-semibold text-white mb-1">Waiting for next player…</h2>
-                  <p className="text-gray-500 text-sm mb-4">
-                    {pendingItems.length > 0
-                      ? `${pendingItems.length} player${pendingItems.length > 1 ? 's' : ''} remaining in queue`
-                      : 'No more players in queue'}
-                  </p>
-                  {isOrganizer && pendingItems.length > 0 && (
-                    <Button variant="primary" onClick={() => setShowQueue(true)}>
-                      <List size={15} className="mr-2" /> Open Queue to Introduce Players
-                    </Button>
-                  )}
-                  {isOrganizer && pendingItems.length === 0 && (
-                    <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
-                      <Flag size={14} className="mr-2" /> End Auction
-                    </Button>
-                  )}
-                </div>
+                /* No live item and no sold summary — waiting state */
+                !lastSold && (
+                  <div className="bg-gray-800 rounded-xl p-12 text-center">
+                    <div className="text-4xl mb-3">🏏</div>
+                    <h2 className="text-xl font-semibold text-white mb-1">Waiting for next player…</h2>
+                    <p className="text-gray-500 text-sm mb-4">
+                      {pendingItems.length > 0
+                        ? `${pendingItems.length} player${pendingItems.length > 1 ? 's' : ''} remaining in queue`
+                        : 'No more players in queue'}
+                    </p>
+                    {isOrganizer && pendingItems.length > 0 && (
+                      <Button variant="primary" onClick={() => setShowQueue(true)}>
+                        <List size={15} className="mr-2" /> Open Queue to Introduce Players
+                      </Button>
+                    )}
+                    {isOrganizer && pendingItems.length === 0 && (
+                      <Button variant="danger" onClick={() => setShowEndConfirm(true)}>
+                        <Flag size={14} className="mr-2" /> End Auction
+                      </Button>
+                    )}
+                  </div>
+                )
               )}
             </div>
 

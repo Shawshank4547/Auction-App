@@ -1,5 +1,5 @@
 import React from 'react';
-import { User } from 'lucide-react';
+import { User, Trophy } from 'lucide-react';
 import Badge from '../shared/Badge';
 import { formatCurrency } from '../../utils/format';
 import { AuctionItem } from '../../types';
@@ -8,60 +8,50 @@ import clsx from 'clsx';
 interface LivePlayerCardProps {
   item: AuctionItem;
   currency?: string;
+  // FIX: accept a sold summary so we can display it after the timer ends
+  soldSummary?: {
+    playerName: string;
+    teamName: string;
+    finalPrice: number;
+  } | null;
 }
 
 const BACKEND_URL = (process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001').replace(/\/$/, '');
 
-/**
- * Resolve image URL:
- * - data: URIs (base64) → returned as-is (stored directly in DB)
- * - absolute http/https URLs → returned as-is (R2 CDN)
- * - relative paths → prepend backend origin (legacy)
- */
 function resolveImageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  if (url.startsWith('data:')) return url;              // base64 DB storage
+  if (url.startsWith('data:')) return url;
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  return `${BACKEND_URL}${url}`;                        // legacy relative path
+  return `${BACKEND_URL}${url}`;
 }
 
-const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' }) => {
+const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR', soldSummary }) => {
   const hasLeader = item.current_leader_team_id && item.current_price;
   const photoUrl = resolveImageUrl(item.photo_url);
 
   return (
-    <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
-      {/* Player photo — FIX: overflow-hidden on the container so the image
-          never bleeds outside the rounded card */}
-      <div className="relative h-48 bg-gradient-to-br from-blue-900/40 to-purple-900/40 flex items-center justify-center overflow-hidden">
-        {photoUrl ? (
+    <div className="bg-gray-800 rounded-xl overflow-hidden border border-gray-700 flex flex-col">
+      {/* Photo — fixed height, fully clipped */}
+      <div className="relative h-52 bg-gradient-to-br from-blue-900/40 to-purple-900/40 overflow-hidden flex-shrink-0">
+        {photoUrl && (
           <img
             src={photoUrl}
             alt={item.player_name}
-            className="absolute inset-0 h-full w-full object-cover object-top"
+            className="absolute inset-0 w-full h-full object-cover object-center"
             onError={(e) => {
               (e.target as HTMLImageElement).style.display = 'none';
-              const parent = (e.target as HTMLImageElement).parentElement;
-              if (parent) {
-                const fallback = parent.querySelector('[data-fallback]') as HTMLElement;
-                if (fallback) fallback.style.display = 'flex';
-              }
             }}
           />
-        ) : null}
-
-        {/* Fallback icon */}
-        <div
-          data-fallback
-          className="absolute inset-0 flex items-center justify-center"
-          style={{ display: photoUrl ? 'none' : 'flex' }}
-        >
-          <User size={64} className="text-gray-600" />
-        </div>
+        )}
+        {!photoUrl && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <User size={64} className="text-gray-600" />
+          </div>
+        )}
 
         {/* LIVE badge */}
         <div className="absolute top-3 left-3 z-10">
-          <span className="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full animate-pulse">
+          <span className="bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full animate-pulse shadow">
             LIVE
           </span>
         </div>
@@ -71,16 +61,19 @@ const LivePlayerCard: React.FC<LivePlayerCardProps> = ({ item, currency = 'INR' 
             <Badge variant="info">{item.category}</Badge>
           </div>
         )}
+
+        {/* Dark gradient at bottom so text overlaid is readable */}
+        <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-gray-800/80 to-transparent" />
       </div>
 
-      {/* Player info */}
-      <div className="p-4 space-y-3">
+      {/* Info */}
+      <div className="p-4 space-y-3 flex-1">
         <div>
-          <h2 className="text-xl font-bold text-white">{item.player_name}</h2>
-          {item.role && <p className="text-sm text-gray-400">{item.role}</p>}
+          <h2 className="text-xl font-bold text-white leading-tight">{item.player_name}</h2>
+          {item.role && <p className="text-sm text-gray-400 mt-0.5">{item.role}</p>}
         </div>
 
-        {/* Current bid */}
+        {/* Current bid / base price */}
         <div className={clsx(
           'rounded-lg p-3 border',
           hasLeader ? 'bg-green-900/20 border-green-800' : 'bg-gray-700/50 border-gray-600'

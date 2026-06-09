@@ -21,6 +21,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
     setActiveTieBreak,
     setIsPaused,
     setAuctionEnded,
+    setLastSold,        // FIX: use new action
     updateTeamBudget,
     markAuctionItemSold,
   } = useAuctionStore();
@@ -42,11 +43,7 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       'auction:paused',
       (data) => {
         setIsPaused(true);
-        // Freeze the timer at the server-reported remaining time
-        if (data.timeRemaining !== undefined) {
-          setTimeRemaining(data.timeRemaining);
-        }
-        // Use a bottom-center toast so it doesn't crowd the organizer buttons
+        if (data.timeRemaining !== undefined) setTimeRemaining(data.timeRemaining);
         toast('⏸ Auction paused', {
           position: 'bottom-center',
           icon: '⏸️',
@@ -59,19 +56,15 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       'auction:resumed',
       (data) => {
         setIsPaused(false);
-        if (data.timeRemaining !== undefined) {
-          setTimeRemaining(data.timeRemaining);
-        }
-        toast.success('▶ Auction resumed', {
-          position: 'bottom-center',
-        });
+        if (data.timeRemaining !== undefined) setTimeRemaining(data.timeRemaining);
+        toast.success('▶ Auction resumed', { position: 'bottom-center' });
       }
     );
 
     const offEnded = socketService.on('auction:ended', () => {
       setLiveItem(null);
       setTimeRemaining(null);
-      setAuctionEnded(true); // FIX: actually set the flag
+      setAuctionEnded(true);
       toast('Auction has ended', { icon: '🏁', duration: 6000, position: 'bottom-center' });
     });
 
@@ -89,6 +82,8 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       roundNumber: number;
       sequenceOrder: number;
     }>('player:introduced', (data) => {
+      // FIX: clear lastSold when a new player comes up
+      setLastSold(null);
       setLiveItem({
         id: data.auctionItemId,
         auction_id: auctionId,
@@ -123,25 +118,51 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       teamName: string;
       finalPrice: number;
     }>('player:sold', (data) => {
+      // FIX: save sold info BEFORE clearing liveItem so we still have photo_url
+      const currentLiveItem = useAuctionStore.getState().liveItem;
+      setLastSold({
+        auctionItemId: data.auctionItemId,
+        playerId: data.playerId,
+        playerName: data.playerName,
+        photoUrl: currentLiveItem?.photo_url ?? null,
+        teamId: data.teamId,
+        teamName: data.teamName,
+        finalPrice: data.finalPrice,
+      });
+
       setLiveItem(null);
       setTimeRemaining(null);
       setActiveTieBreak(null);
       updateTeamBudget(data.teamId, data.finalPrice);
       markAuctionItemSold(data.auctionItemId);
+
       const isMyTeam = data.teamId === myTeamId;
       if (isMyTeam) {
-        toast.success(`🎉 ${data.playerName} sold to YOUR team for ₹${data.finalPrice.toLocaleString('en-IN')}!`, { duration: 5000 });
+        toast.success(`🎉 ${data.playerName} sold to YOUR team!`, { duration: 5000 });
       } else {
-        toast(`${data.playerName} → ${data.teamName} for ₹${data.finalPrice.toLocaleString('en-IN')}`, { icon: '🔨', duration: 4000 });
+        toast(`${data.playerName} → ${data.teamName}`, { icon: '🔨', duration: 4000 });
       }
     });
 
-    const offUnsold = socketService.on<{ auctionItemId: string; playerName: string }>('player:unsold', (data) => {
-      setLiveItem(null);
-      setTimeRemaining(null);
-      markAuctionItemSold(data.auctionItemId);
-      toast(`${data.playerName} went unsold`, { icon: '📋' });
-    });
+    const offUnsold = socketService.on<{ auctionItemId: string; playerName: string; playerId: string }>(
+      'player:unsold',
+      (data) => {
+        // FIX: show unsold state too
+        setLastSold({
+          auctionItemId: data.auctionItemId,
+          playerId: data.playerId,
+          playerName: data.playerName,
+          photoUrl: useAuctionStore.getState().liveItem?.photo_url ?? null,
+          teamId: '',
+          teamName: '',
+          finalPrice: 0,
+        });
+        setLiveItem(null);
+        setTimeRemaining(null);
+        markAuctionItemSold(data.auctionItemId);
+        toast(`${data.playerName} went unsold`, { icon: '📋' });
+      }
+    );
 
     // ── Bid events ──────────────────────────────────────────
     const offBidAccepted = socketService.on<{
@@ -151,7 +172,6 @@ export const useAuctionSocket = ({ auctionId, myTeamId }: UseAuctionSocketOption
       timeRemaining?: number;
       bid: { team_name?: string; team_id?: string };
     }>('bid:accepted', (data) => {
-      // Use team_name from bid object; fallback gracefully
       const teamName = data.bid?.team_name || '';
       updateLiveItemPrice(data.amount, data.teamId, teamName, data.timeRemaining);
       addBidFeed({ teamId: data.teamId, teamName, amount: data.amount });

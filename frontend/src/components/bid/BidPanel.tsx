@@ -3,7 +3,7 @@ import { toast } from 'react-hot-toast';
 import { TrendingUp, Zap, Wallet, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 import Button from '../shared/Button';
-import { formatCurrency, shortCurrency } from '../../utils/format';
+import { formatCurrency } from '../../utils/format';
 import api from '../../services/api';
 import { Auction, AuctionItem, Team } from '../../types';
 
@@ -21,11 +21,10 @@ function getQuickAmounts(
   bidCapAmount: number | null
 ): number[] {
   const cap = bidCapAmount ?? Infinity;
-  const budget = remainingBudget;
 
   let step = bidIncrement;
-  if (step > budget * 0.5) {
-    step = Math.max(1, Math.floor(budget / 5));
+  if (step > remainingBudget * 0.5) {
+    step = Math.max(1, Math.floor(remainingBudget / 5));
     const magnitude = Math.pow(10, Math.floor(Math.log10(step)));
     step = Math.round(step / magnitude) * magnitude || 1;
   }
@@ -40,7 +39,7 @@ function getQuickAmounts(
   ];
 
   for (const a of candidates) {
-    if (a <= budget && a <= cap && !amounts.includes(a)) {
+    if (a <= remainingBudget && a <= cap && !amounts.includes(a)) {
       amounts.push(a);
     }
     if (amounts.length >= 4) break;
@@ -53,31 +52,24 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
   const [loading, setLoading] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
 
-  const currentPrice = liveItem.current_price || 0;
-  const basePrice = liveItem.base_price || auction.starting_bid || auction.bid_increment;
+  const currentPrice = liveItem.current_price ?? 0;
 
-  // First bid must meet base price; subsequent bids must beat current by increment
+  // FIX: minBid should ONLY use bid_increment for subsequent bids,
+  // and ONLY the player's base_price for the first bid — never auction.starting_bid
+  // in the Math.max, since that can be much larger and block valid bids.
+  const playerBasePrice = liveItem.base_price ?? auction.bid_increment;
   const minBid = currentPrice > 0
     ? currentPrice + auction.bid_increment
-    : Math.max(basePrice, auction.starting_bid || 0);
+    : playerBasePrice;  // first bid: just need to meet the player's base price
 
   const isLeader = myTeam?.id === liveItem.current_leader_team_id;
   const hasEnoughBudget = myTeam ? myTeam.remaining_budget >= minBid : false;
   const canBid = !disabled && myTeam && !isLeader && hasEnoughBudget;
 
-  // FIX: surface a clear reason why bidding is blocked
-  const blockReason: string | null = (() => {
-    if (!myTeam) return null;
-    if (isLeader) return null; // shown separately
-    if (disabled) return 'paused';
-    if (!hasEnoughBudget) {
-      // Distinguish: budget is simply less than minBid vs less than base price
-      if (myTeam.remaining_budget < basePrice) {
-        return `Your budget (${formatCurrency(myTeam.remaining_budget, auction.currency)}) is below the base price of ${formatCurrency(basePrice, auction.currency)}`;
-      }
-      return `You need ${formatCurrency(minBid, auction.currency)} to bid but only have ${formatCurrency(myTeam.remaining_budget, auction.currency)}`;
-    }
-    return null;
+  // FIX: clear, accurate reason — check actual minBid, not basePrice separately
+  const insufficientFundsReason: string | null = (() => {
+    if (!myTeam || isLeader || disabled || hasEnoughBudget) return null;
+    return `Need ${formatCurrency(minBid, auction.currency)} to bid — you have ${formatCurrency(myTeam.remaining_budget, auction.currency)}`;
   })();
 
   const quickAmounts = myTeam
@@ -112,6 +104,10 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
       toast.error(`Minimum bid is ${formatCurrency(minBid, auction.currency)}`);
       return;
     }
+    if (myTeam && amount > myTeam.remaining_budget) {
+      toast.error(`Amount exceeds your budget of ${formatCurrency(myTeam.remaining_budget, auction.currency)}`);
+      return;
+    }
     await handleBid(amount);
     setCustomAmount('');
   };
@@ -126,7 +122,7 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
 
   return (
     <div className="bg-gray-800 rounded-xl p-4 space-y-4 w-full">
-      {/* Header row */}
+      {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-semibold text-white flex items-center gap-2 shrink-0">
           <Zap size={16} className="text-yellow-400" />
@@ -141,22 +137,22 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
         </div>
       </div>
 
+      {/* Minimum bid info — always visible so users know what they need */}
+      <div className="bg-gray-700/40 rounded-lg px-3 py-2 flex items-center justify-between text-xs">
+        <span className="text-gray-400">Minimum next bid</span>
+        <span className="text-white font-semibold">{formatCurrency(minBid, auction.currency)}</span>
+      </div>
+
       {isLeader && (
         <div className="bg-green-900/30 border border-green-800 rounded-lg p-2 text-center">
-          <p className="text-green-400 text-sm font-medium">🏆 Your team leads!</p>
+          <p className="text-green-400 text-sm font-medium">🏆 Your team is leading!</p>
         </div>
       )}
 
-      {/* FIX: show specific reason instead of generic "Insufficient budget" */}
-      {!isLeader && blockReason && blockReason !== 'paused' && (
-        <div className="bg-red-900/30 border border-red-800 rounded-lg p-3">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
-            <p className="text-red-400 text-xs leading-relaxed">{blockReason}</p>
-          </div>
-          <p className="text-gray-500 text-xs mt-1.5 ml-5">
-            Minimum required: <span className="text-gray-300 font-medium">{formatCurrency(minBid, auction.currency)}</span>
-          </p>
+      {insufficientFundsReason && (
+        <div className="bg-red-900/30 border border-red-800 rounded-lg p-3 flex items-start gap-2">
+          <AlertCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
+          <p className="text-red-400 text-xs leading-relaxed">{insufficientFundsReason}</p>
         </div>
       )}
 
@@ -191,7 +187,7 @@ const BidPanel: React.FC<BidPanelProps> = ({ auction, liveItem, myTeam, disabled
         <form onSubmit={handleCustomBid} className="flex gap-2">
           <input
             type="number"
-            placeholder={`Min: ${formatCurrency(minBid, auction.currency)}`}
+            placeholder={`Min ${formatCurrency(minBid, auction.currency)}`}
             value={customAmount}
             onChange={(e) => setCustomAmount(e.target.value)}
             min={minBid}
